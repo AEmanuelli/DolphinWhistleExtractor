@@ -1,4 +1,4 @@
-# DNN whistle detection
+# DolphinWhistleExtractor
 
 This project is designed for the extraction, prediction, and analysis of audio signals, particularly focusing on whistle sounds. The project structure is organized into several modules that handle different aspects of the workflow, from data preparation and model training to prediction and comparison.
 
