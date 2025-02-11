@@ -193,14 +193,40 @@ class ProcessingGUI:
         self.row_counter += 1
 
     def create_output_area(self):
-        ttk.Label(self.main_frame, text="Processing Log:").grid(row=self.row_counter, 
-                                                              column=0, sticky="W", pady=5)
-        self.install_output_text = scrolledtext.ScrolledText(self.main_frame, height=10, 
+        # Create a frame for the output area
+        output_frame = ttk.Frame(self.main_frame)
+        output_frame.grid(row=self.row_counter, column=0, columnspan=3, sticky="NSEW", pady=5)
+        
+        # Add label and copy button in the same row
+        label_button_frame = ttk.Frame(output_frame)
+        label_button_frame.pack(fill=tk.X, pady=(5,0))
+        
+        ttk.Label(label_button_frame, text="Processing Log:").pack(side=tk.LEFT)
+        copy_button = ttk.Button(label_button_frame, text="Copy Log", 
+                               command=self.copy_log_to_clipboard)
+        copy_button.pack(side=tk.RIGHT)
+        
+        # Create the text widget
+        self.install_output_text = scrolledtext.ScrolledText(output_frame, height=10, 
                                                            width=60, wrap=tk.WORD)
-        self.install_output_text.grid(row=self.row_counter + 1, column=0, columnspan=3, 
-                                    sticky="NSEW", padx=5, pady=5)
-        self.install_output_text.config(state=tk.DISABLED)
-        self.row_counter += 2
+        self.install_output_text.pack(fill=tk.BOTH, expand=True, pady=(5,0))
+        
+        self.row_counter += 1
+
+    def copy_log_to_clipboard(self):
+        """Copy the contents of the output text to clipboard"""
+        text_content = self.install_output_text.get(1.0, tk.END).strip()
+        if text_content:
+            self.root.clipboard_clear()
+            self.root.clipboard_append(text_content)
+            messagebox.showinfo("Success", "Log content copied to clipboard!")
+        else:
+            messagebox.showinfo("Info", "No content to copy")
+
+    def update_output_text(self, text: str):
+        """Thread-safe update of the output text widget"""
+        self.install_output_text.insert(tk.END, text)
+        self.install_output_text.see(tk.END)
 
     def check_output_queue(self):
         """Check for output in the queue and update the UI accordingly"""
@@ -212,13 +238,6 @@ class ProcessingGUI:
             pass
         finally:
             self.root.after(100, self.check_output_queue)
-
-    def update_output_text(self, text: str):
-        """Thread-safe update of the output text widget"""
-        self.install_output_text.config(state=tk.NORMAL)
-        self.install_output_text.insert(tk.END, text)
-        self.install_output_text.see(tk.END)
-        self.install_output_text.config(state=tk.DISABLED)
 
     def browse_file(self, entry: ttk.Entry, file_description: str = "Select File"):
         """Open a file dialog and insert the selected file path into the given entry widget."""
@@ -275,8 +294,14 @@ class ProcessingGUI:
                     self.root.after(0, messagebox.showinfo, "Success", 
                                   "Dependencies installed successfully!")
                 else:
-                    self.root.after(0, messagebox.showerror, "Installation Error",
-                                  "Error installing dependencies. Check output for details.")
+                    # Capture the full error output
+                    error_output = ""
+                    while not self.output_queue.empty():
+                        error_output += self.output_queue.get() + "\n"
+                    
+                    # Show a copyable error message box
+                    self.root.after(0, self.show_copyable_error, "Installation Error",
+                                    "Error installing dependencies. Check output for details:\n\n" + error_output)
             except Exception as e:
                 self.root.after(0, messagebox.showerror, "Error", str(e))
             finally:
@@ -306,6 +331,35 @@ class ProcessingGUI:
         except ValueError as e:
             messagebox.showerror("Input Error", f"Please check input values:\n{str(e)}")
             return None
+    
+    def show_copyable_error(self, title, message):
+        """Display a copyable error message using a dialog with a text area."""
+        dialog = tk.Toplevel(self.root)
+        dialog.title(title)
+        dialog.geometry("600x400")  # Adjust size as needed
+        dialog.resizable(True, True)
+
+        # Make the dialog modal
+        dialog.transient(self.root)  # Set parent window
+        dialog.grab_set()  # Make the dialog modal
+
+        text_area = scrolledtext.ScrolledText(dialog, wrap=tk.WORD)
+        text_area.insert(tk.INSERT, message)
+        text_area.pack(expand=True, fill='both', padx=10, pady=10)
+
+        # Add a copy button
+        def copy_text():
+            dialog.clipboard_clear()
+            dialog.clipboard_append(text_area.get(1.0, tk.END))
+
+        copy_button = ttk.Button(dialog, text="Copy to Clipboard", command=copy_text)
+        copy_button.pack(pady=(0, 10))
+        
+        # Add close button
+        close_button = ttk.Button(dialog, text="Close", command=dialog.destroy)
+        close_button.pack()
+        
+        dialog.wait_window()
 
     def run_process(self):
         """Run the main processing function"""
@@ -363,8 +417,14 @@ class ProcessingGUI:
                 self.root.after(0, messagebox.showinfo, "Success", 
                                 "Processing completed successfully!")
             except Exception as e:
-                self.root.after(0, messagebox.showerror, "Processing Error", 
-                                f"An error occurred during processing:\n{str(e)}")
+                # Capture full error output
+                error_output = ""
+                while not self.output_queue.empty():
+                    error_output += self.output_queue.get() + "\n"
+                error_output += str(e) # Add the exception itself
+
+                self.root.after(0, self.show_copyable_error, "Processing Error",
+                                f"An error occurred during processing:\n\n{error_output}")
             finally:
                 # Restore original sys.stdout
                 sys.stdout = original_stdout
