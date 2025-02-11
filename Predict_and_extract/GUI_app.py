@@ -18,7 +18,7 @@ default_saving_folder = os.path.join(cwd, "processed")
 class ProcessingGUI:
     def __init__(self, root):
         self.root = root
-        self.root.title("Whistle Processing")
+        self.root.title("Whistle Extractor")
         self.root.resizable(False, False)
         
         # Queue for thread-safe communication

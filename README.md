@@ -13,9 +13,8 @@ A comprehensive tool for detecting and extracting dolphin whistles from audio an
 
 ## 📋 Prerequisites
 
-- Python 3.8 or 3.9
-- CUDA-compatible GPU (recommended for faster processing)
-- tkinter (for GUI interface)
+- Python 3.9
+
 
 ## Installation
 
@@ -28,7 +27,7 @@ cd Dolphins/DNN_whistle_detection/
 2. Set up a virtual environment (recommended):
 ```bash
 # Using conda (recommended)
-conda create -n DolphinWhistleExtractor python=3.8
+conda create -n DolphinWhistleExtractor python=3.9
 conda activate DolphinWhistleExtractor
 conda install tk
 
