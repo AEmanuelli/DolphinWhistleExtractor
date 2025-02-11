@@ -34,3 +34,4 @@ DNN_yolo_dolphin_recognition/yolov5/
 Dolphins_env
 DNN_whistle_detection/Train_model/whistles_from_csv
 DNN_yolo_dolphin_image_recognition/yolov5/
+processed
