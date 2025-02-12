@@ -31,14 +31,31 @@ conda create -n DolphinWhistleExtractor python=3.9
 conda activate DolphinWhistleExtractor
 conda install tk
 
+```markdown
 # OR using venv
 python -m venv venv
 source venv/bin/activate  # On Windows: venv\Scripts\activate
-pip install tkinter
 ```
 
-3. Install dependencies:
-- **Option 1 (Recommended)**: Use the GUI's "Install Dependencies" button
+3. Install tkinter
+- Ubuntu
+```bash
+sudo apt-get install python3-tk 
+```
+
+- Fedora
+```bash
+sudo dnf install python3-tkinter
+```
+
+- MacOS
+```bash
+brew install python-tk
+```
+
+
+4. Install dependencies:
+- **Option 1**: Use the GUI's "Install Dependencies" button
 - **Option 2**: Manual installation via command line:
   ```bash
   pip install -r requirements.txt

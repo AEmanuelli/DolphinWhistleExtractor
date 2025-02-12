@@ -192,27 +192,6 @@ class ProcessingGUI:
         self.progress_bar.grid(row=self.row_counter, column=0, columnspan=3, pady=10, sticky="WE")
         self.row_counter += 1
 
-    def create_output_area(self):
-        # Create a frame for the output area
-        output_frame = ttk.Frame(self.main_frame)
-        output_frame.grid(row=self.row_counter, column=0, columnspan=3, sticky="NSEW", pady=5)
-        
-        # Add label and copy button in the same row
-        label_button_frame = ttk.Frame(output_frame)
-        label_button_frame.pack(fill=tk.X, pady=(5,0))
-        
-        ttk.Label(label_button_frame, text="Processing Log:").pack(side=tk.LEFT)
-        copy_button = ttk.Button(label_button_frame, text="Copy Log", 
-                               command=self.copy_log_to_clipboard)
-        copy_button.pack(side=tk.RIGHT)
-        
-        # Create the text widget
-        self.install_output_text = scrolledtext.ScrolledText(output_frame, height=10, 
-                                                           width=60, wrap=tk.WORD)
-        self.install_output_text.pack(fill=tk.BOTH, expand=True, pady=(5,0))
-        
-        self.row_counter += 1
-
     def copy_log_to_clipboard(self):
         """Copy the contents of the output text to clipboard"""
         text_content = self.install_output_text.get(1.0, tk.END).strip()
@@ -259,56 +238,6 @@ class ProcessingGUI:
         self.install_btn.config(state=state)
         self.start_btn.config(state=state)
 
-    def install_dependencies(self):
-        """Install dependencies from requirements.txt using pip"""
-        requirements_path = "requirements.txt"
-        if not os.path.exists(requirements_path):
-            messagebox.showerror("Error", "requirements.txt not found!")
-            return
-
-        self.install_output_text.config(state=tk.NORMAL)
-        self.install_output_text.delete(1.0, tk.END)
-        self.install_output_text.insert(tk.END, "Installing dependencies...\n")
-        self.install_output_text.config(state=tk.DISABLED)
-        
-        self.progress_bar.start(10)
-        self.toggle_controls(False)
-
-        def install_thread():
-            try:
-                process = subprocess.Popen(
-                    [sys.executable, "-m", "pip", "install", "-r", requirements_path,
-                     "--disable-pip-version-check", "--no-cache-dir"],
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.STDOUT,
-                    text=True,
-                    bufsize=1,
-                    universal_newlines=True
-                )
-
-                for line in process.stdout:
-                    self.output_queue.put(line)
-
-                process.wait()
-                if process.returncode == 0:
-                    self.root.after(0, messagebox.showinfo, "Success", 
-                                  "Dependencies installed successfully!")
-                else:
-                    # Capture the full error output
-                    error_output = ""
-                    while not self.output_queue.empty():
-                        error_output += self.output_queue.get() + "\n"
-                    
-                    # Show a copyable error message box
-                    self.root.after(0, self.show_copyable_error, "Installation Error",
-                                    "Error installing dependencies. Check output for details:\n\n" + error_output)
-            except Exception as e:
-                self.root.after(0, messagebox.showerror, "Error", str(e))
-            finally:
-                self.root.after(0, self.progress_bar.stop)
-                self.root.after(0, lambda: self.toggle_controls(True))
-
-        threading.Thread(target=install_thread, daemon=True).start()
 
     def validate_inputs(self) -> Optional[dict]:
         """Validate all inputs and return them as a dictionary if valid"""
@@ -433,6 +362,155 @@ class ProcessingGUI:
 
         threading.Thread(target=process_thread, daemon=True).start()
 
+    def create_output_area(self):
+        # Create a frame for the output area
+        output_frame = ttk.Frame(self.main_frame)
+        output_frame.grid(row=self.row_counter, column=0, columnspan=3, sticky="NSEW", pady=5)
+        
+        # Add label and copy button in the same row
+        label_button_frame = ttk.Frame(output_frame)
+        label_button_frame.pack(fill=tk.X, pady=(5,0))
+        
+        ttk.Label(label_button_frame, text="Processing Log:").pack(side=tk.LEFT)
+        copy_button = ttk.Button(label_button_frame, text="Copy Log", 
+                               command=self.copy_log_to_clipboard)
+        copy_button.pack(side=tk.RIGHT)
+        
+        # Create the text widget - note we're not setting it to disabled initially
+        self.install_output_text = scrolledtext.ScrolledText(output_frame, height=10, 
+                                                           width=60, wrap=tk.WORD)
+        self.install_output_text.pack(fill=tk.BOTH, expand=True, pady=(5,0))
+        
+        self.row_counter += 1
+
+    def update_output_text(self, text: str):
+        """Thread-safe update of the output text widget"""
+        self.install_output_text.config(state=tk.NORMAL)  # Enable writing
+        self.install_output_text.insert(tk.END, text)
+        self.install_output_text.see(tk.END)
+        self.install_output_text.config(state=tk.NORMAL)  # Keep it enabled for future updates
+
+    def install_dependencies(self):
+        """Install dependencies from requirements.txt using pip"""
+        requirements_path = "requirements.txt"
+        if not os.path.exists(requirements_path):
+            messagebox.showerror("Error", "requirements.txt not found!")
+            return
+
+        self.install_output_text.delete(1.0, tk.END)
+        self.install_output_text.insert(tk.END, "Installing dependencies...\n")
+        
+        self.progress_bar.start(10)
+        self.toggle_controls(False)
+
+        def install_thread():
+            try:
+                process = subprocess.Popen(
+                    [sys.executable, "-u", "-m", "pip", "install", "-r", requirements_path,
+                     "--disable-pip-version-check", "--no-cache-dir"],
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                    bufsize=1,
+                    universal_newlines=True
+                )
+
+                for line in process.stdout:
+                    self.output_queue.put(line)
+
+                process.wait()
+                if process.returncode == 0:
+                    self.root.after(0, messagebox.showinfo, "Success", 
+                                  "Dependencies installed successfully!")
+                else:
+                    error_output = ""
+                    while not self.output_queue.empty():
+                        error_output += self.output_queue.get() + "\n"
+                    
+                    self.root.after(0, self.show_copyable_error, "Installation Error",
+                                    "Error installing dependencies. Check output for details:\n\n" + error_output)
+            except Exception as e:
+                self.root.after(0, messagebox.showerror, "Error", str(e))
+            finally:
+                self.root.after(0, self.progress_bar.stop)
+                self.root.after(0, lambda: self.toggle_controls(True))
+
+        threading.Thread(target=install_thread, daemon=True).start()
+
+    def run_process(self):
+        """Run the main processing function"""
+        inputs = self.validate_inputs()
+        if not inputs:
+            return
+
+        # Clear previous output
+        self.install_output_text.delete(1.0, tk.END)
+        self.install_output_text.insert(tk.END, "Starting processing...\n")
+
+        # Handle specific files
+        if inputs['specific_files_path']:
+            try:
+                with open(inputs['specific_files_path'], 'r') as f:
+                    inputs['specific_files'] = f.read().splitlines()
+            except Exception as e:
+                messagebox.showerror("Error", f"Error reading specific files list:\n{str(e)}")
+                return
+        else:
+            inputs['specific_files'] = None
+
+        def process_thread():
+            self.progress_bar.start(10)
+            self.toggle_controls(False)
+
+            # Create a custom writer that queues printed messages
+            class QueueWriter:
+                def __init__(self, queue_obj):
+                    self.queue = queue_obj
+                def write(self, msg):
+                    if msg.strip():  # Only queue non-empty messages
+                        self.queue.put(msg + "\n")  # Add newline for better formatting
+                def flush(self):
+                    pass
+
+            # Redirect both stdout and stderr
+            qw = QueueWriter(self.output_queue)
+            original_stdout = sys.stdout
+            original_stderr = sys.stderr
+            sys.stdout = qw
+            sys.stderr = qw
+
+            try:
+                from predict_and_extract_online import process_predict_extract
+                process_predict_extract(
+                    recording_folder_path=inputs['recordings'],
+                    saving_folder=inputs['saving_folder'],
+                    CLF=inputs['CLF'],
+                    CHF=inputs['CHF'],
+                    image_norm=inputs['image_norm'],
+                    start_time=inputs['start_time'],
+                    end_time=inputs['end_time'],
+                    batch_size=inputs['batch_size'],
+                    save=inputs['save'],
+                    save_p=inputs['save_p'],
+                    model_path=inputs['model_path'],
+                    max_workers=inputs['max_workers'],
+                    specific_files=inputs['specific_files']
+                )
+                self.output_queue.put("Processing completed successfully!\n")
+                self.root.after(0, messagebox.showinfo, "Success", 
+                                "Processing completed successfully!")
+            except Exception as e:
+                error_output = f"An error occurred during processing:\n{str(e)}\n"
+                self.output_queue.put(error_output)
+                self.root.after(0, self.show_copyable_error, "Processing Error", error_output)
+            finally:
+                # Restore original stdout and stderr
+                sys.stdout = original_stdout
+                sys.stderr = original_stderr
+                self.root.after(0, self.progress_bar.stop)
+                self.root.after(0, lambda: self.toggle_controls(True))
+
+        threading.Thread(target=process_thread, daemon=True).start()
 if __name__ == "__main__":
     root = tk.Tk()
     app = ProcessingGUI(root)
