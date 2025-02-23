@@ -2,6 +2,7 @@ import os
 import shutil
 import tkinter as tk
 from tkinter import messagebox
+from tkinter import ttk
 from PIL import Image, ImageTk
 
 # Demande des chemins avec valeurs par défaut
@@ -15,6 +16,12 @@ negative_dir = os.path.join(base_dataset, "negatives")
 PAS_ATTENDU = 0.4
 TOLERANCE = 1e-6
 
+# Taille d'affichage pour toutes les images (les trois auront la même taille)
+IMAGE_SIZE = (400, 400)
+
+# Variable globale pour l'annulation de la dernière action
+last_action = None
+
 # --- Fonctions utilitaires ---
 
 def read_file_list(file_path):
@@ -23,7 +30,6 @@ def read_file_list(file_path):
         exit(1)
     with open(file_path, "r") as f:
         lines = f.readlines()
-    # Enlever espaces et lignes vides
     files = [line.strip() for line in lines if line.strip()]
     return files
 
@@ -34,7 +40,6 @@ def update_file_list():
             f.write(path + "\n")
 
 def determine_category(filepath):
-    """Retourne 'positives' ou 'negatives' si le chemin contient ces mots, sinon 'inconnu'."""
     if "positives" in filepath:
         return "positives"
     elif "negatives" in filepath:
@@ -43,10 +48,6 @@ def determine_category(filepath):
         return "inconnu"
 
 def extract_prefix_and_number(filename):
-    """
-    Extrait le préfixe et la valeur numérique à partir d'un nom de fichier.
-    Exemple : "Exp_02_Feb_2020_1545pm-1942.0.jpg" → ("Exp_02_Feb_2020_1545pm", 1942.0)
-    """
     base, ext = os.path.splitext(filename)
     if '-' in base:
         prefix, num_str = base.rsplit('-', 1)
@@ -59,30 +60,72 @@ def extract_prefix_and_number(filename):
 
 # --- Préparation de la liste des images ---
 file_paths = read_file_list(file_list_path)
-# Chaque entrée est un tuple (chemin, catégorie déduite)
 current_images = []
 for path in file_paths:
     cat = determine_category(path)
     current_images.append((path, cat))
+total_images_count = len(current_images)
 
 # --- Interface graphique principale ---
 root = tk.Tk()
 root.title("Revue des images - Correction de classification")
+root.geometry("1300x750")
 
-# Zone d'affichage de l'image courante
-image_label = tk.Label(root)
-image_label.pack()
+# Cadre pour afficher les images
+image_frame = tk.Frame(root)
+image_frame.pack(pady=10)
 
-# Label d'information (chemin et catégorie)
-info_label = tk.Label(root, text="", font=("Helvetica", 10))
-info_label.pack(pady=5)
+left_image_label = tk.Label(image_frame)
+left_image_label.grid(row=0, column=0, padx=5)
 
-# Variable globale pour l'image affichée
-img = None
+center_image_label = tk.Label(image_frame)
+center_image_label.grid(row=0, column=1, padx=5)
+
+right_image_label = tk.Label(image_frame)
+right_image_label.grid(row=0, column=2, padx=5)
+
+# Cadre pour afficher les infos de chaque image
+info_frame = tk.Frame(root)
+info_frame.pack(pady=5)
+
+left_info_label = tk.Label(info_frame, text="", font=("Helvetica", 8))
+left_info_label.grid(row=0, column=0, padx=5)
+
+center_info_label = tk.Label(info_frame, text="", font=("Helvetica", 8))
+center_info_label.grid(row=0, column=1, padx=5)
+
+right_info_label = tk.Label(info_frame, text="", font=("Helvetica", 8))
+right_info_label.grid(row=0, column=2, padx=5)
+
+# Barre de progression
+progress_frame = tk.Frame(root)
+progress_frame.pack(pady=10, fill="x", padx=20)
+progress_label = tk.Label(progress_frame, text="Progression:")
+progress_label.pack(side="left")
+progress_bar = ttk.Progressbar(progress_frame, orient="horizontal", mode="determinate", maximum=total_images_count)
+progress_bar.pack(side="left", fill="x", expand=True, padx=10)
+progress_text = tk.Label(progress_frame, text=f"0 / {total_images_count}")
+progress_text.pack(side="right")
+
+# Variable pour le toggle "Voir images temporelles"
+show_neighbors_active = tk.BooleanVar(value=False)
+
+# Variables globales pour les images affichées
+img_center = None
+img_left = None
+img_right = None
+
+def update_progress():
+    processed = total_images_count - len(current_images)
+    progress_bar['value'] = processed
+    progress_text.config(text=f"{processed} / {total_images_count}")
 
 def show_current_image():
-    """Affiche l'image courante (premier élément de current_images)."""
-    global img
+    global img_center
+    left_image_label.config(image="", text="")
+    right_image_label.config(image="", text="")
+    left_info_label.config(text="")
+    right_info_label.config(text="")
     if not current_images:
         messagebox.showinfo("Fin", "Aucune image à afficher.")
         root.quit()
@@ -90,19 +133,27 @@ def show_current_image():
     current_filepath, current_category = current_images[0]
     try:
         pil_image = Image.open(current_filepath)
-        pil_image.thumbnail((800, 600))
-        img = ImageTk.PhotoImage(pil_image)
-        image_label.config(image=img)
-        info_label.config(text=f"Fichier : {current_filepath}\nCatégorie actuelle : {current_category}")
+        pil_image.thumbnail(IMAGE_SIZE)
+        img_center = ImageTk.PhotoImage(pil_image)
+        center_image_label.config(image=img_center)
+        filename = os.path.basename(current_filepath)
+        directory = os.path.dirname(current_filepath)
+        center_info_label.config(text=f"Nom: {filename}\nDossier: {directory}\nCatégorie: {current_category}")
     except Exception as e:
         messagebox.showerror("Erreur", f"Impossible d'ouvrir l'image : {current_filepath}\n{e}")
         process_current_image('skip')
+    if show_neighbors_active.get():
+        show_temporal_neighbors()
+    else:
+        # Effacer les images voisines si le toggle est désactivé
+        left_image_label.config(image="", text="")
+        right_image_label.config(image="", text="")
+        left_info_label.config(text="")
+        right_info_label.config(text="")
+    update_progress()
 
 def process_current_image(action):
-    """
-    Selon l'action ('move' ou 'skip'), traite l'image courante,
-    la retire de la liste et met à jour le fichier liste.
-    """
+    global last_action
     if not current_images:
         return
     current_filepath, current_category = current_images[0]
@@ -119,19 +170,46 @@ def process_current_image(action):
         try:
             shutil.move(current_filepath, target_path)
             messagebox.showinfo("Déplacement", f"Image déplacée vers {target_category}:\n{target_path}")
+            last_action = {'action': 'move', 'filepath': current_filepath, 'target_path': target_path}
         except Exception as e:
             messagebox.showerror("Erreur", f"Impossible de déplacer l'image:\n{e}")
-    # Retirer l'image courante de la liste et mettre à jour le fichier
+            return
+    elif action == 'skip':
+        last_action = {'action': 'skip', 'filepath': current_filepath}
     current_images.pop(0)
     update_file_list()
+    left_image_label.config(image="", text="")
+    right_image_label.config(image="", text="")
+    left_info_label.config(text="")
+    right_info_label.config(text="")
+    show_current_image()
+
+def undo_last_action():
+    global last_action
+    if last_action is None:
+        messagebox.showinfo("Annuler", "Aucune action à annuler.")
+        return
+    if last_action['action'] == 'move':
+        original_path = last_action['filepath']
+        target_path = last_action['target_path']
+        try:
+            shutil.move(target_path, original_path)
+            current_images.insert(0, (original_path, determine_category(original_path)))
+            update_file_list()
+            messagebox.showinfo("Annuler", f"Action annulée. L'image a été replacée dans {determine_category(original_path)}")
+        except Exception as e:
+            messagebox.showerror("Erreur", f"Impossible d'annuler l'action de déplacement:\n{e}")
+            return
+    elif last_action['action'] == 'skip':
+        original_path = last_action['filepath']
+        current_images.insert(0, (original_path, determine_category(original_path)))
+        update_file_list()
+        messagebox.showinfo("Annuler", "Action de passage annulée.")
+    last_action = None
     show_current_image()
 
 def show_temporal_neighbors():
-    """
-    Recherche dans le dataset (base_dataset) les images dont le préfixe est identique à
-    l'image courante et affiche celles qui sont immédiatement adjacentes (différence numérique égale à PAS_ATTENDU).
-    L'image précédente est affichée à gauche et l'image suivante à droite de l'image courante.
-    """
+    global img_left, img_right
     if not current_images:
         messagebox.showerror("Erreur", "Aucune image courante.")
         return
@@ -144,7 +222,6 @@ def show_temporal_neighbors():
 
     similar_images = []
     valid_ext = (".jpg", ".jpeg", ".png", ".gif", ".bmp")
-    # Recherche dans l'intégralité du dataset
     for root_dir, dirs, files in os.walk(base_dataset):
         for file in files:
             if file.lower().endswith(valid_ext):
@@ -166,85 +243,73 @@ def show_temporal_neighbors():
         messagebox.showinfo("Informations", "Image actuelle introuvable parmi les images similaires.")
         return
 
-    # Création d'une fenêtre pour afficher les images côte à côte
-    neighbor_win = tk.Toplevel(root)
-    neighbor_win.title("Images temporelles voisines")
-    frame = tk.Frame(neighbor_win)
-    frame.pack()
-
-    # Affichage de l'image précédente à gauche (si immédiatement collée)
     if index > 0:
         prev_path, prev_num = similar_images[index - 1]
         if abs(current_num - prev_num - PAS_ATTENDU) < TOLERANCE:
-            prev_category = determine_category(prev_path)
             try:
                 pil_prev = Image.open(prev_path)
-                pil_prev.thumbnail((300, 300))
-                img_prev = ImageTk.PhotoImage(pil_prev)
-                label_prev = tk.Label(frame, image=img_prev)
-                label_prev.image = img_prev  # garder une référence
-                label_prev.grid(row=0, column=0, padx=10, pady=10)
-                tk.Label(frame, text=f"Précédente:\n{prev_path}\nCatégorie : {prev_category}", justify="center") \
-                  .grid(row=1, column=0, padx=10, pady=10)
+                pil_prev.thumbnail(IMAGE_SIZE)
+                img_left = ImageTk.PhotoImage(pil_prev)
+                left_image_label.config(image=img_left)
+                left_info_label.config(text=f"Nom: {os.path.basename(prev_path)}\nDossier: {os.path.dirname(prev_path)}\nCatégorie: {determine_category(prev_path)}")
             except Exception as e:
-                tk.Label(frame, text="Erreur d'affichage de l'image précédente.", justify="center") \
-                  .grid(row=0, column=0, padx=10, pady=10)
+                left_image_label.config(text="Erreur d'affichage\nprécédente.")
+                left_info_label.config(text="")
         else:
-            tk.Label(frame, text="Aucune image précédente immédiatement collée.", justify="center") \
-              .grid(row=0, column=0, padx=10, pady=10)
+            left_image_label.config(text="Aucune image précédente\nimmédiate.")
+            left_info_label.config(text="")
     else:
-        tk.Label(frame, text="Aucune image précédente trouvée.", justify="center") \
-          .grid(row=0, column=0, padx=10, pady=10)
+        left_image_label.config(text="Aucune image précédente\ntrouvée.")
+        left_info_label.config(text="")
 
-    # Affichage de l'image actuelle au centre
-    try:
-        pil_current = Image.open(current_filepath)
-        pil_current.thumbnail((300, 300))
-        img_current = ImageTk.PhotoImage(pil_current)
-        label_current = tk.Label(frame, image=img_current)
-        label_current.image = img_current
-        label_current.grid(row=0, column=1, padx=10, pady=10)
-        tk.Label(frame, text=f"Actuelle:\n{current_filepath}", justify="center") \
-          .grid(row=1, column=1, padx=10, pady=10)
-    except Exception as e:
-        tk.Label(frame, text="Erreur d'affichage de l'image actuelle.", justify="center") \
-          .grid(row=0, column=1, padx=10, pady=10)
-
-    # Affichage de l'image suivante à droite (si immédiatement collée)
     if index < len(similar_images) - 1:
         next_path, next_num = similar_images[index + 1]
         if abs(next_num - current_num - PAS_ATTENDU) < TOLERANCE:
-            next_category = determine_category(next_path)
             try:
                 pil_next = Image.open(next_path)
-                pil_next.thumbnail((300, 300))
-                img_next = ImageTk.PhotoImage(pil_next)
-                label_next = tk.Label(frame, image=img_next)
-                label_next.image = img_next
-                label_next.grid(row=0, column=2, padx=10, pady=10)
-                tk.Label(frame, text=f"Suivante:\n{next_path}\nCatégorie : {next_category}", justify="center") \
-                  .grid(row=1, column=2, padx=10, pady=10)
+                pil_next.thumbnail(IMAGE_SIZE)
+                img_right = ImageTk.PhotoImage(pil_next)
+                right_image_label.config(image=img_right)
+                right_info_label.config(text=f"Nom: {os.path.basename(next_path)}\nDossier: {os.path.dirname(next_path)}\nCatégorie: {determine_category(next_path)}")
             except Exception as e:
-                tk.Label(frame, text="Erreur d'affichage de l'image suivante.", justify="center") \
-                  .grid(row=0, column=2, padx=10, pady=10)
+                right_image_label.config(text="Erreur d'affichage\nsuivante.")
+                right_info_label.config(text="")
         else:
-            tk.Label(frame, text="Aucune image suivante immédiatement collée.", justify="center") \
-              .grid(row=0, column=2, padx=10, pady=10)
+            right_image_label.config(text="Aucune image suivante\nimmédiate.")
+            right_info_label.config(text="")
     else:
-        tk.Label(frame, text="Aucune image suivante trouvée.", justify="center") \
-          .grid(row=0, column=2, padx=10, pady=10)
+        right_image_label.config(text="Aucune image suivante\ntrouvée.")
+        right_info_label.config(text="")
+
+def toggle_neighbors():
+    """Fonction appelée lors du clic sur le bouton-toggle pour les images temporelles.
+       Si activé, affiche les voisins ; sinon, les efface."""
+    if show_neighbors_active.get():
+        show_temporal_neighbors()
+    else:
+        left_image_label.config(image="", text="")
+        right_image_label.config(image="", text="")
+        left_info_label.config(text="")
+        right_info_label.config(text="")
 
 # --- Boutons d'action ---
-button_move = tk.Button(root, text="Déplacer vers l'autre dossier", command=lambda: process_current_image('move'), width=30)
-button_move.pack(side=tk.LEFT, padx=10, pady=10)
+button_frame = tk.Frame(root)
+button_frame.pack(pady=10)
 
-button_next = tk.Button(root, text="Suivant", command=lambda: process_current_image('skip'), width=15)
-button_next.pack(side=tk.RIGHT, padx=10, pady=10)
+button_move = tk.Button(button_frame, text="Déplacer vers l'autre dossier", command=lambda: process_current_image('move'), width=30)
+button_move.grid(row=0, column=0, padx=10)
 
-button_neighbors = tk.Button(root, text="Voir images temporelles", command=show_temporal_neighbors, width=30)
-button_neighbors.pack(pady=10)
+button_next = tk.Button(button_frame, text="Suivant", command=lambda: process_current_image('skip'), width=15)
+button_next.grid(row=0, column=1, padx=10)
 
-# Affichage de la première image
+neighbors_toggle = tk.Checkbutton(button_frame, text="Voir images temporelles", variable=show_neighbors_active,
+                                  onvalue=True, offvalue=False, indicatoron=0, width=30,
+                                  command=toggle_neighbors)
+neighbors_toggle.grid(row=0, column=2, padx=10)
+
+button_undo = tk.Button(button_frame, text="Annuler l'action", command=undo_last_action, width=20)
+button_undo.grid(row=0, column=3, padx=10)
+
 show_current_image()
 
 root.mainloop()

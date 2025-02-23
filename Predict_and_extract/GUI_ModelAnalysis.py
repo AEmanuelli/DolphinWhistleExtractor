@@ -3,7 +3,7 @@ from tkinter import ttk, filedialog, messagebox
 from keras.models import load_model
 from keras.preprocessing.image import ImageDataGenerator
 import numpy as np
-from sklearn.metrics import classification_report, confusion_matrix
+from sklearn.metrics import classification_report
 import os
 from PIL import Image, ImageTk
 
