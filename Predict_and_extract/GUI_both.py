@@ -63,7 +63,7 @@ def create_data_generator(directory: str, batch_size: int, class_mode: str, prep
         class_mode = 'categorical'
         datagen = ImageDataGenerator(
         )
-        
+
     else:
         # Pour les modèles binaires standards
         class_mode = 'binary'
@@ -71,8 +71,6 @@ def create_data_generator(directory: str, batch_size: int, class_mode: str, prep
             rescale=1/255.,
             preprocessing_function=preprocessing_function
         )
-
-    
 
     return datagen.flow_from_directory(
         directory,
@@ -173,6 +171,10 @@ class ModelAnalysisGUI:
         # Run analysis button
         self.run_btn = ttk.Button(input_frame, text="Run Analysis", command=self.run_analysis)
         self.run_btn.grid(row=4, column=0, columnspan=3, pady=10)
+
+        # Save misclassified paths button
+        self.save_paths_btn = ttk.Button(input_frame, text="Save Misclassified Paths", command=self.save_misclassified_paths, state=tk.DISABLED) # Initially disabled
+        self.save_paths_btn.grid(row=5, column=0, columnspan=3, pady=10)
 
     def create_progress_section(self):
         """Create progress bar, status label, and cancel button"""
@@ -349,11 +351,16 @@ class ModelAnalysisGUI:
         else:  # All Misclassified
             indices = np.where(true_labels != y_pred_classes)[0]
 
-        for idx in indices:
-            self.file_listbox.insert(tk.END, self.current_filenames[idx])
+        misclassified_filenames = [self.current_filenames[idx] for idx in indices]
+        for filename in misclassified_filenames:
+            self.file_listbox.insert(tk.END, filename)
 
-        msg = f"Found {len(indices)} {self.analysis_type.get()} at threshold {threshold:.3f}"
+        msg = f"Found {len(misclassified_filenames)} {self.analysis_type.get()} at threshold {threshold:.3f}"
         self.status_label['text'] = msg
+        if misclassified_filenames: # Enable save button only if there are misclassified files
+            self.save_paths_btn['state'] = tk.NORMAL
+        else:
+            self.save_paths_btn['state'] = tk.DISABLED
 
     def run_analysis(self):
         """Lance l'analyse avec vérification du cache"""
@@ -375,6 +382,7 @@ class ModelAnalysisGUI:
         # Reset cancel flag and enable cancel button
         self.cancel_analysis = False
         self.cancel_button['state'] = 'normal'
+        self.save_paths_btn['state'] = tk.DISABLED # Disable save paths button at the start of a new analysis
 
         # Start analysis in separate thread
         self.analysis_thread = threading.Thread(target=self.analysis_task)
@@ -501,6 +509,28 @@ class ModelAnalysisGUI:
             self.cancel_button['state'] = 'disabled'
             self.cancel_analysis = False
 
+    def save_misclassified_paths(self):
+        """Sauvegarde les chemins des fichiers mal classés dans un fichier texte."""
+        misclassified_filenames = self.file_listbox.get(0, tk.END)
+        if not misclassified_filenames:
+            messagebox.showinfo("Info", "Aucun fichier mal classé à sauvegarder.")
+            return
+
+        file_path = filedialog.asksaveasfilename(
+            defaultextension=".txt",
+            filetypes=[("Text files", "*.txt"), ("All files", "*.*")],
+            title="Save Misclassified File Paths"
+        )
+
+        if file_path:
+            try:
+                with open(file_path, 'w') as f:
+                    for filename in misclassified_filenames:
+                        full_path = os.path.join(self.test_dir, filename)
+                        f.write(full_path + '\n')
+                messagebox.showinfo("Success", f"Chemins sauvegardés dans:\n{file_path}")
+            except Exception as e:
+                messagebox.showerror("Error", f"Erreur lors de la sauvegarde des chemins:\n{e}")
 
 if __name__ == "__main__":
     root = tk.Tk()
