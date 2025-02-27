@@ -446,7 +446,7 @@ def transform_file_name(file_name):
         transformed_name = f"{day}_{month}_{year}_{time}_c{channel}"
         return transformed_name
     else:
-        return None
+        return file_name.split('.')[0]
 
 def prepare_csv_data(file_path, record_names, positive_initial, positive_finish):
     part = file_path.split('wav-')

@@ -5,11 +5,22 @@ Dolphin Whistle Detection and Extraction Tool
 This script processes audio recordings to detect and extract dolphin whistle segments
 using a pre-trained deep neural network model. It supports batch processing with
 configurable parameters and multi-threaded execution.
+
+Usage:
+    ./dolphin_whistle_detector.py [OPTIONS]
+
+Examples:
+    # Basic usage with default parameters
+    ./dolphin_whistle_detector.py
+    
+    # Process specific files with custom frequency range
+    ./dolphin_whistle_detector.py --specific_files file_list.txt --CLF 5 --CHF 25 --save_p
 """
 
 import argparse
 import json
 import os
+import sys
 from predict_and_extract_online import process_predict_extract
 
 
@@ -23,8 +34,13 @@ def read_file_list(file_path):
     Returns:
         list: A list of file paths.
     """
-    with open(file_path, 'r') as file:
-        return file.read().splitlines()
+    try:
+        with open(file_path, 'r') as file:
+            return file.read().splitlines()
+    except (IOError, FileNotFoundError) as e:
+        print(f"Error reading file list '{file_path}': {e}")
+        sys.exit(1)
+
 
 def load_config(config_path):
     """
@@ -67,6 +83,7 @@ def load_config(config_path):
         print("Using default configuration in memory, but configuration was not saved to disk.")
         return config # Return the config in memory even if saving failed
 
+
 def main():
     """
     Main function that parses command-line arguments and executes the processing pipeline.
@@ -91,7 +108,8 @@ def main():
 
     # Set up command-line arguments
     parser = argparse.ArgumentParser(
-        description="Process predictions and extract segments from dolphin audio recordings."
+        description="Process predictions and extract segments from dolphin audio recordings.",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter
     )
     
     # Model and path parameters
@@ -134,27 +152,60 @@ def main():
     parser.add_argument('--image_norm', action='store_true', 
                         help='Normalize spectrograms by dividing by 255')
     
+    # Add version info
+    parser.add_argument('--version', action='version', version='%(prog)s 1.0.0')
+    
     args = parser.parse_args()
     
-    # Read specific files list if provided
-    specific_files = read_file_list(args.specific_files) if args.specific_files else None
+    # Validate key parameters
+    if not os.path.exists(args.model_path):
+        print(f"Error: Model file not found at '{args.model_path}'")
+        sys.exit(1)
+        
+    if not os.path.exists(args.recordings):
+        print(f"Error: Recordings folder not found at '{args.recordings}'")
+        sys.exit(1)
+        
+    # Create saving folder if it doesn't exist
+    if not os.path.exists(args.saving_folder):
+        try:
+            os.makedirs(args.saving_folder)
+            print(f"Created saving folder: {args.saving_folder}")
+        except OSError as e:
+            print(f"Error creating saving folder '{args.saving_folder}': {e}")
+            sys.exit(1)
     
-    # Process predictions and extract segments
-    process_predict_extract(
-        recording_folder_path=args.recordings,
-        saving_folder=args.saving_folder,
-        CLF=args.CLF,
-        CHF=args.CHF,
-        image_norm=args.image_norm,
-        start_time=args.start_time,
-        end_time=args.end_time,
-        batch_size=args.batch_size,
-        save=args.save,
-        save_p=args.save_p,
-        model_path=args.model_path,
-        max_workers=args.max_workers,
-        specific_files=specific_files
-    )
+    # Read specific files list if provided
+    specific_files = None
+    if args.specific_files:
+        if not os.path.exists(args.specific_files):
+            print(f"Error: Specific files list not found at '{args.specific_files}'")
+            sys.exit(1)
+        specific_files = read_file_list(args.specific_files)
+        print(f"Processing {len(specific_files)} files from list: {args.specific_files}")
+    
+    try:
+        # Process predictions and extract segments
+        print(f"Starting whistle detection with {args.max_workers} workers...")
+        process_predict_extract(
+            recording_folder_path=args.recordings,
+            saving_folder=args.saving_folder,
+            CLF=args.CLF,
+            CHF=args.CHF,
+            image_norm=args.image_norm,
+            start_time=args.start_time,
+            end_time=args.end_time,
+            batch_size=args.batch_size,
+            save=args.save,
+            save_p=args.save_p,
+            model_path=args.model_path,
+            max_workers=args.max_workers,
+            specific_files=specific_files
+        )
+        print("Processing completed successfully.")
+    except Exception as e:
+        print(f"Error during processing: {e}")
+        sys.exit(1)
 
 
 if __name__ == "__main__":
