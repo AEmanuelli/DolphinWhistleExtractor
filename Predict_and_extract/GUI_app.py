@@ -6,6 +6,7 @@ import sys
 import threading
 import queue
 from typing import Optional
+from pathlib import Path
 
 # -----------------------
 # Default Paths based on Current Working Directory
@@ -132,21 +133,49 @@ class ProcessingGUI:
         model_frame = ttk.LabelFrame(self.advanced_frame, text="Model Settings", padding="5 5 5 5")
         model_frame.grid(row=2, column=0, columnspan=2, sticky="EW", pady=5)
         
+        # Add threshold field
+        self.threshold_entry = self.add_entry_to_frame(model_frame, "Detection Threshold:", "0.5", 0)
+        
         # Image normalization with warning in model frame
         self.image_norm_var = tk.BooleanVar(value=False)
         norm_frame = ttk.Frame(model_frame)
-        norm_frame.grid(row=0, column=0, columnspan=2, sticky="W", pady=5)
+        norm_frame.grid(row=1, column=0, columnspan=2, sticky="W", pady=5)
         
         ttk.Checkbutton(norm_frame, text="Image Normalization (/255)", 
                        variable=self.image_norm_var).pack(side=tk.LEFT)
         ttk.Label(norm_frame, text="(Leave unchecked unless using a different model)", 
                  foreground="gray").pack(side=tk.LEFT, padx=5)
         
-        # Hidden specific files entry
-        self.specific_files_entry = ttk.Entry(self.advanced_frame)
-        self.specific_files_entry.grid_remove()
+        # Specific files
+        files_frame = ttk.LabelFrame(self.advanced_frame, text="Specific Files", padding="5 5 5 5")
+        files_frame.grid(row=3, column=0, columnspan=2, sticky="EW", pady=5)
+        
+        self.specific_files_var = tk.BooleanVar(value=False)
+        specific_files_check = ttk.Checkbutton(files_frame, text="Process specific files only", 
+                                             variable=self.specific_files_var,
+                                             command=self.toggle_specific_files)
+        specific_files_check.grid(row=0, column=0, sticky="W", padx=5)
+        
+        self.specific_files_frame = ttk.Frame(files_frame)
+        self.specific_files_frame.grid(row=1, column=0, columnspan=2, sticky="EW", pady=5)
+        self.specific_files_frame.grid_remove()  # Initially hidden
+        
+        self.specific_files_entry = self.add_file_input_to_frame(
+            self.specific_files_frame, 
+            "File List:", 
+            "", 
+            lambda: self.browse_file(self.specific_files_entry, "Select File List"),
+            file_types=[("Text files", "*.txt"), ("All files", "*.*")],
+            row=0
+        )
         
         self.row_counter += 1
+
+    def toggle_specific_files(self):
+        if self.specific_files_var.get():
+            self.specific_files_frame.grid()
+        else:
+            self.specific_files_frame.grid_remove()
 
     def add_file_input(self, label: str, default_value: str, browse_command, file_types=None) -> ttk.Entry:
         ttk.Label(self.main_frame, text=label).grid(row=self.row_counter, column=0, sticky="E", pady=5)
@@ -158,6 +187,17 @@ class ProcessingGUI:
         browse_btn.grid(row=self.row_counter, column=2, padx=5)
         
         self.row_counter += 1
+        return entry
+
+    def add_file_input_to_frame(self, frame, label: str, default_value: str, browse_command, file_types=None, row: int = 0) -> ttk.Entry:
+        ttk.Label(frame, text=label).grid(row=row, column=0, sticky="E", pady=5)
+        entry = ttk.Entry(frame, width=50)
+        entry.insert(0, default_value)
+        entry.grid(row=row, column=1, padx=5)
+        
+        browse_btn = ttk.Button(frame, text="Browse", command=browse_command)
+        browse_btn.grid(row=row, column=2, padx=5)
+        
         return entry
 
     def add_entry_to_frame(self, frame, label: str, default_value: str, row: int) -> ttk.Entry:
@@ -192,6 +232,27 @@ class ProcessingGUI:
         self.progress_bar.grid(row=self.row_counter, column=0, columnspan=3, pady=10, sticky="WE")
         self.row_counter += 1
 
+    def create_output_area(self):
+        # Create a frame for the output area
+        output_frame = ttk.Frame(self.main_frame)
+        output_frame.grid(row=self.row_counter, column=0, columnspan=3, sticky="NSEW", pady=5)
+        
+        # Add label and copy button in the same row
+        label_button_frame = ttk.Frame(output_frame)
+        label_button_frame.pack(fill=tk.X, pady=(5,0))
+        
+        ttk.Label(label_button_frame, text="Processing Log:").pack(side=tk.LEFT)
+        copy_button = ttk.Button(label_button_frame, text="Copy Log", 
+                               command=self.copy_log_to_clipboard)
+        copy_button.pack(side=tk.RIGHT)
+        
+        # Create the text widget
+        self.install_output_text = scrolledtext.ScrolledText(output_frame, height=10, 
+                                                           width=60, wrap=tk.WORD)
+        self.install_output_text.pack(fill=tk.BOTH, expand=True, pady=(5,0))
+        
+        self.row_counter += 1
+
     def copy_log_to_clipboard(self):
         """Copy the contents of the output text to clipboard"""
         text_content = self.install_output_text.get(1.0, tk.END).strip()
@@ -218,9 +279,9 @@ class ProcessingGUI:
         finally:
             self.root.after(100, self.check_output_queue)
 
-    def browse_file(self, entry: ttk.Entry, file_description: str = "Select File"):
+    def browse_file(self, entry: ttk.Entry, file_description: str = "Select File", file_types=None):
         """Open a file dialog and insert the selected file path into the given entry widget."""
-        filename = filedialog.askopenfilename(title=file_description)
+        filename = filedialog.askopenfilename(title=file_description, filetypes=file_types if file_types else [])
         if filename:
             entry.delete(0, tk.END)
             entry.insert(0, filename)
@@ -238,24 +299,28 @@ class ProcessingGUI:
         self.install_btn.config(state=state)
         self.start_btn.config(state=state)
 
-
     def validate_inputs(self) -> Optional[dict]:
         """Validate all inputs and return them as a dictionary if valid"""
         try:
+            # Get end time value, convert to None if empty
+            end_time_str = self.end_time_entry.get().strip()
+            end_time = int(end_time_str) if end_time_str else None
+            
             return {
                 'model_path': self.model_entry.get().strip(),
                 'recordings': self.recordings_entry.get().strip(),
                 'saving_folder': self.saving_folder_entry.get().strip(),
                 'start_time': int(self.start_time_entry.get().strip() or "0"),
-                'end_time': int(self.end_time_entry.get().strip()) if self.end_time_entry.get().strip() else None,
+                'end_time': end_time,
                 'batch_size': int(self.batch_size_entry.get().strip()),
                 'save': self.save_var.get(),
                 'save_p': self.save_p_var.get(),
                 'max_workers': int(self.max_workers_entry.get().strip()),
-                'specific_files_path': self.specific_files_entry.get().strip(),
+                'specific_files_path': self.specific_files_entry.get().strip() if self.specific_files_var.get() else "",
                 'CLF': int(self.clf_entry.get().strip()),
                 'CHF': int(self.chf_entry.get().strip()),
-                'image_norm': self.image_norm_var.get()
+                'image_norm': self.image_norm_var.get(),
+                'threshold': float(self.threshold_entry.get().strip())
             }
         except ValueError as e:
             messagebox.showerror("Input Error", f"Please check input values:\n{str(e)}")
@@ -289,106 +354,6 @@ class ProcessingGUI:
         close_button.pack()
         
         dialog.wait_window()
-
-    def run_process(self):
-        """Run the main processing function"""
-        inputs = self.validate_inputs()
-        if not inputs:
-            return
-
-        # Handle specific files
-        if inputs['specific_files_path']:
-            try:
-                with open(inputs['specific_files_path'], 'r') as f:
-                    inputs['specific_files'] = f.read().splitlines()
-            except Exception as e:
-                messagebox.showerror("Error", f"Error reading specific files list:\n{str(e)}")
-                return
-        else:
-            inputs['specific_files'] = None
-
-        def process_thread():
-            self.progress_bar.start(10)
-            self.toggle_controls(False)
-
-            # Create a custom writer that queues printed messages
-            class QueueWriter:
-                def __init__(self, queue_obj):
-                    self.queue = queue_obj
-                def write(self, msg):
-                    if msg.strip():
-                        self.queue.put(msg)
-                def flush(self):
-                    pass
-
-            qw = QueueWriter(self.output_queue)
-            # Backup the original stdout and redirect
-            original_stdout = sys.stdout
-            sys.stdout = qw
-
-            try:
-                from predict_and_extract_online import process_predict_extract
-                process_predict_extract(
-                    recording_folder_path=inputs['recordings'],
-                    saving_folder=inputs['saving_folder'],
-                    CLF=inputs['CLF'],
-                    CHF=inputs['CHF'],
-                    image_norm=inputs['image_norm'],
-                    start_time=inputs['start_time'],
-                    end_time=inputs['end_time'],
-                    batch_size=inputs['batch_size'],
-                    save=inputs['save'],
-                    save_p=inputs['save_p'],
-                    model_path=inputs['model_path'],
-                    max_workers=inputs['max_workers'],
-                    specific_files=inputs['specific_files']
-                )
-                self.root.after(0, messagebox.showinfo, "Success", 
-                                "Processing completed successfully!")
-            except Exception as e:
-                # Capture full error output
-                error_output = ""
-                while not self.output_queue.empty():
-                    error_output += self.output_queue.get() + "\n"
-                error_output += str(e) # Add the exception itself
-
-                self.root.after(0, self.show_copyable_error, "Processing Error",
-                                f"An error occurred during processing:\n\n{error_output}")
-            finally:
-                # Restore original sys.stdout
-                sys.stdout = original_stdout
-                self.root.after(0, self.progress_bar.stop)
-                self.root.after(0, lambda: self.toggle_controls(True))
-
-        threading.Thread(target=process_thread, daemon=True).start()
-
-    def create_output_area(self):
-        # Create a frame for the output area
-        output_frame = ttk.Frame(self.main_frame)
-        output_frame.grid(row=self.row_counter, column=0, columnspan=3, sticky="NSEW", pady=5)
-        
-        # Add label and copy button in the same row
-        label_button_frame = ttk.Frame(output_frame)
-        label_button_frame.pack(fill=tk.X, pady=(5,0))
-        
-        ttk.Label(label_button_frame, text="Processing Log:").pack(side=tk.LEFT)
-        copy_button = ttk.Button(label_button_frame, text="Copy Log", 
-                               command=self.copy_log_to_clipboard)
-        copy_button.pack(side=tk.RIGHT)
-        
-        # Create the text widget - note we're not setting it to disabled initially
-        self.install_output_text = scrolledtext.ScrolledText(output_frame, height=10, 
-                                                           width=60, wrap=tk.WORD)
-        self.install_output_text.pack(fill=tk.BOTH, expand=True, pady=(5,0))
-        
-        self.row_counter += 1
-
-    def update_output_text(self, text: str):
-        """Thread-safe update of the output text widget"""
-        self.install_output_text.config(state=tk.NORMAL)  # Enable writing
-        self.install_output_text.insert(tk.END, text)
-        self.install_output_text.see(tk.END)
-        self.install_output_text.config(state=tk.NORMAL)  # Keep it enabled for future updates
 
     def install_dependencies(self):
         """Install dependencies from requirements.txt using pip"""
@@ -468,7 +433,7 @@ class ProcessingGUI:
                     self.queue = queue_obj
                 def write(self, msg):
                     if msg.strip():  # Only queue non-empty messages
-                        self.queue.put(msg + "\n")  # Add newline for better formatting
+                        self.queue.put(msg)
                 def flush(self):
                     pass
 
@@ -484,19 +449,20 @@ class ProcessingGUI:
                 process_predict_extract(
                     recording_folder_path=inputs['recordings'],
                     saving_folder=inputs['saving_folder'],
-                    CLF=inputs['CLF'],
-                    CHF=inputs['CHF'],
-                    image_norm=inputs['image_norm'],
+                    cut_low_freq=inputs['CLF'],
+                    cut_high_freq=inputs['CHF'],
+                    image_normalize=inputs['image_norm'],
                     start_time=inputs['start_time'],
                     end_time=inputs['end_time'],
                     batch_size=inputs['batch_size'],
                     save=inputs['save'],
-                    save_p=inputs['save_p'],
+                    save_positives=inputs['save_p'],
                     model_path=inputs['model_path'],
+                    binary_threshold=inputs['threshold'],
                     max_workers=inputs['max_workers'],
                     specific_files=inputs['specific_files']
                 )
-                self.output_queue.put("Processing completed successfully!\n")
+                self.output_queue.put("\nProcessing completed successfully!\n")
                 self.root.after(0, messagebox.showinfo, "Success", 
                                 "Processing completed successfully!")
             except Exception as e:
@@ -511,6 +477,8 @@ class ProcessingGUI:
                 self.root.after(0, lambda: self.toggle_controls(True))
 
         threading.Thread(target=process_thread, daemon=True).start()
+
+
 if __name__ == "__main__":
     root = tk.Tk()
     app = ProcessingGUI(root)
