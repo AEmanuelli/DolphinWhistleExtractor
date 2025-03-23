@@ -563,67 +563,110 @@ def process_audio_file(file_path, saving_folder="./images", batch_size=50, start
 
     return images
 
-# def process_audio_file_alternative(file_path, saving_folder="./images", batch_size=50, start_time=0, end_time=None, save=False, wlen=2048,
-#                                    nfft=2048, sliding_w=0.4, cut_low_frequency=3, cut_high_frequency=25, target_width_px=1920,
-#                                    target_height_px=1080):
-#     try:
-#         # Load sound recording
-#         x, fs = librosa.load(file_path, sr=None)
-#         print("zboub")
-#     except FileNotFoundError:
-#         raise FileNotFoundError(f"File {file_path} not found.")
-    
-#     # Create the saving folder if it doesn't exist
-#     if save and not os.path.exists(saving_folder):
-#         os.makedirs(saving_folder)
-    
-#     # Calculate the spectrogram parameters
-#     hop_length = int(sliding_w * fs)
-#     n_mels = 128  # Number of Mel bands
-    
-#     images = []
-#     file_name = os.path.splitext(os.path.basename(file_path))[0]
-#     N = len(x)  # signal length
 
-#     if end_time is not None:
-#         N = min(N, int(end_time * fs))
 
-#     low = int(start_time * fs)
-    
-#     for _ in range(batch_size):
-#         if low + hop_length > N:  # Check if the slice exceeds the signal length
-#             break
-#         x_w = x[low:low + hop_length]
+def process_audio_file_super_fast(file_path, saving_folder="./images", batch_size=50, start_time=0, end_time=None, 
+                       save=False, wlen=2048, nfft=2048, sliding_w=0.4, cut_low_frequency=3, 
+                       cut_high_frequency=20, target_width_px=903, target_height_px=677):
+    """
+    Process an audio file and generate spectrogram images.
+
+    This optimized version avoids creating matplotlib figures for every spectrogram. 
+    Instead, it converts the computed spectrogram (in dB) directly to a grayscale image,
+    crops the frequency range, normalizes the values, resizes using OpenCV, and finally
+    saves the image if requested.
+
+    Parameters:
+        file_path (str): Path to the audio file.
+        saving_folder (str): Folder to save images (if save=True).
+        batch_size (int): Number of spectrogram images to generate.
+        start_time (float): Start time in seconds.
+        end_time (float): End time in seconds.
+        save (bool): Whether to save the images.
+        wlen (int): Window length for spectrogram calculation.
+        nfft (int): Number of FFT points.
+        sliding_w (float): Duration of each slice in seconds.
+        cut_low_frequency (int): Lower frequency limit (in kHz) for the spectrogram.
+        cut_high_frequency (int): Upper frequency limit (in kHz) for the spectrogram.
+        target_width_px (int): Target image width in pixels.
+        target_height_px (int): Target image height in pixels.
+
+    Returns:
+        images (list): List of spectrogram images as numpy arrays.
         
-#         # Calculate the Mel spectrogram
-#         Sxx = librosa.feature.melspectrogram(y=x_w, sr=fs, n_fft=nfft, hop_length=hop_length, n_mels=n_mels, fmin=cut_low_frequency, fmax=cut_high_frequency)
-#         Sxx = librosa.power_to_db(Sxx, ref=np.max)  # Convert to dB
-
-#         # Create the spectrogram plot
-#         fig, ax = plt.subplots()
-#         librosa.display.specshow(Sxx, sr=fs, hop_length=hop_length, cmap='inferno')
-#         ax.set_ylim(cut_low_frequency, cut_high_frequency)
+    Raises:
+        FileNotFoundError: If the audio file is not found.
+    """
+    import os
+    import numpy as np
+    import cv2
+    from scipy.signal import spectrogram
+    # Use NumPy’s Blackman window; alternatively, you can import from scipy.signal.windows
+    win = blackman(wlen, sym=False)
+    
+    try:
+        from scipy.io import wavfile
+        fs, x = wavfile.read(file_path)
+    except FileNotFoundError:
+        raise FileNotFoundError(f"File {file_path} not found.")
+    
+    # Create saving folder if saving is enabled
+    if save and not os.path.exists(saving_folder):
+        os.makedirs(saving_folder)
+    
+    images = []
+    file_name = os.path.splitext(os.path.basename(file_path))[0]
+    N = len(x)
+    if end_time is not None:
+        N = min(N, int(end_time * fs))
+    low = int(start_time * fs)
+    samples_per_slice = int(sliding_w * fs)
+    
+    # Pre-calculate frequency cropping indices later using the frequency array (f) from the first slice
+    first_slice = True
+    for _ in range(batch_size):
+        if low + samples_per_slice > N:
+            break
         
-#         ax.axis('off')  # Turn off axis
+        x_w = x[low:low + samples_per_slice]
+        win = blackman(wlen, sym=False)
+        f, t, Sxx = spectrogram(x_w, fs, nperseg=wlen, noverlap=hop, nfft=nfft, window=win)
+        # Convert to dB scale as in original
+        Sxx = 20 * np.log10(np.abs(Sxx) + 1e-14)
         
-#         fig.set_size_inches(target_width_px / plt.rcParams['figure.dpi'], target_height_px / plt.rcParams['figure.dpi'])
+        if first_slice:
+            # f is in Hz; use kHz limits
+            low_freq_hz = cut_low_frequency * 1000
+            high_freq_hz = cut_high_frequency * 1000
+            low_idx = np.searchsorted(f, low_freq_hz)
+            high_idx = np.searchsorted(f, high_freq_hz)
+            first_slice = False
+        
+        # Crop frequency axis as original (note: original divides f by 1000 for plotting,
+        # but we use the indices determined from the Hz values)
+        Sxx_cropped = Sxx[low_idx:high_idx, :]
+        
+        # Mimic pcolormesh default normalization (per-slice dynamic range)
+        vmin = Sxx_cropped.min()
+        vmax = Sxx_cropped.max()
+        # Prevent division by zero in flat spectra
+        norm = (Sxx_cropped - vmin) / (vmax - vmin + 1e-14)
+        # Map to 0-255 grayscale
+        img_gray = np.uint8(255 * norm)
+        
+        # Resize image to target dimensions; using INTER_LINEAR for smoother interpolation
+        resized = cv2.resize(img_gray, (target_width_px, target_height_px), interpolation=cv2.INTER_LINEAR)
+        # Convert to 3-channel image to mimic original output
+        image = cv2.cvtColor(resized, cv2.COLOR_GRAY2BGR)
+        
+        if save:
+            image_name = os.path.join(saving_folder, f"{file_name}-{low/fs:.2f}.jpg")
+            cv2.imwrite(image_name, image)
+        
+        images.append(image)
+        low += samples_per_slice
 
-#         # Save the spectrogram as a JPG image without borders
-#         if save:
-#             image_name = os.path.join(saving_folder, f"{file_name}-{low/fs}.jpg")
-#             fig.savefig(image_name, dpi=plt.rcParams['figure.dpi'], bbox_inches='tight', pad_inches=0)  # Save without borders
-
-#         fig.canvas.draw()
-#         image = np.frombuffer(fig.canvas.tostring_rgb(), dtype=np.uint8)
-#         image = image.reshape(fig.canvas.get_width_height()[::-1] + (3,))
-#         images.append(image)
-
-#         low += hop_length
-
-#         plt.close(fig)  # Close figure to release memory
-
-#     return images
-
+    return images
 
 
 #%%
