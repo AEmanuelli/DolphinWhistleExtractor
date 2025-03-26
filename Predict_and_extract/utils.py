@@ -565,9 +565,9 @@ def process_audio_file(file_path, saving_folder="./images", batch_size=50, start
 
 
 
-def process_audio_file_super_fast(file_path, saving_folder="./images", batch_size=50, start_time=0, end_time=None, 
+def process_audio_file_corrected(file_path, saving_folder="./images", batch_size=50, start_time=0, end_time=3, 
                        save=False, wlen=2048, nfft=2048, sliding_w=0.4, cut_low_frequency=3, 
-                       cut_high_frequency=20, target_width_px=903, target_height_px=677):
+                       cut_high_frequency=20, target_width_px=1167, target_height_px=875):
     """
     Process an audio file and generate spectrogram images.
 
@@ -603,7 +603,7 @@ def process_audio_file_super_fast(file_path, saving_folder="./images", batch_siz
     from scipy.signal import spectrogram
     # Use NumPy’s Blackman window; alternatively, you can import from scipy.signal.windows
     win = blackman(wlen, sym=False)
-    
+    hop = round(0.8 * wlen)  # window hop size
     try:
         from scipy.io import wavfile
         fs, x = wavfile.read(file_path)
@@ -620,8 +620,9 @@ def process_audio_file_super_fast(file_path, saving_folder="./images", batch_siz
     if end_time is not None:
         N = min(N, int(end_time * fs))
     low = int(start_time * fs)
-    samples_per_slice = int(sliding_w * fs)
-    
+    new_samples_per_slice = int(sliding_w * fs)
+    samples_per_slice = int(0.8 * fs)
+
     # Pre-calculate frequency cropping indices later using the frequency array (f) from the first slice
     first_slice = True
     for _ in range(batch_size):
@@ -630,9 +631,9 @@ def process_audio_file_super_fast(file_path, saving_folder="./images", batch_siz
         
         x_w = x[low:low + samples_per_slice]
         win = blackman(wlen, sym=False)
-        f, t, Sxx = spectrogram(x_w, fs, nperseg=wlen, noverlap=hop, nfft=nfft, window=win)
+        f, t, Sxx = spectrogram(x_w, fs, nperseg=wlen, noverlap=wlen-hop, nfft=nfft, window=win)
         # Convert to dB scale as in original
-        Sxx = 20 * np.log10(np.abs(Sxx) + 1e-14)
+        Sxx = 10 * np.log10(np.abs(Sxx) + 1e-14)
         
         if first_slice:
             # f is in Hz; use kHz limits
@@ -655,18 +656,19 @@ def process_audio_file_super_fast(file_path, saving_folder="./images", batch_siz
         img_gray = np.uint8(255 * norm)
         
         # Resize image to target dimensions; using INTER_LINEAR for smoother interpolation
-        resized = cv2.resize(img_gray, (target_width_px, target_height_px), interpolation=cv2.INTER_LINEAR)
-        # Convert to 3-channel image to mimic original output
-        image = cv2.cvtColor(resized, cv2.COLOR_GRAY2BGR)
+        resized =  cv2.resize(img_gray, (target_width_px, target_height_px), interpolation=cv2.INTER_NEAREST)
+        # Convert to 3-channel image by stacking the grayscale image three times
+        image = np.stack([resized, resized, resized], axis=2)
         
         if save:
-            image_name = os.path.join(saving_folder, f"{file_name}-{low/fs:.2f}.jpg")
+            image_name = os.path.join(saving_folder, f"{file_name}-{low/fs:.2f}_fast.jpg")
             cv2.imwrite(image_name, image)
         
         images.append(image)
-        low += samples_per_slice
+        low += new_samples_per_slice
 
     return images
+
 
 
 #%%
