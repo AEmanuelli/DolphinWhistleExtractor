@@ -118,6 +118,11 @@ def prepare_image_batch(images: List[np.ndarray], start_time: float,
     
     # Ensure correct dtype for TensorFlow
     return processed_images.astype(np.float32), time_info
+
+
+
+
+    
 def save_positive_prediction(image: np.ndarray, start_time: float, end_time: float, 
                              saving_folder: Path) -> None:
     """Save a positive prediction image to disk."""

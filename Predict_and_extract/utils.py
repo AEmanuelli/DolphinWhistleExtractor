@@ -474,7 +474,7 @@ def save_csv(record_names, positive_initial, positive_finish, class_1_scores, cs
     
     df.to_csv(csv_path, index=False)
 
-def process_audio_file(file_path, saving_folder="./images", batch_size=50, start_time=0, end_time=None, save=False, wlen=2048,
+def process_audio_file_old(file_path, saving_folder="./images", batch_size=50, start_time=0, end_time=None, save=False, wlen=2048,
                        nfft=2048, sliding_w=0.4, cut_low_frequency=3, cut_high_frequency=20, target_width_px=903,
                        target_height_px=677):
     """
@@ -565,7 +565,7 @@ def process_audio_file(file_path, saving_folder="./images", batch_size=50, start
 
 
 
-def process_audio_file_corrected(file_path, saving_folder="./images", batch_size=50, start_time=0, end_time=3, 
+def process_audio_file_fast(file_path, saving_folder="./images", batch_size=50, start_time=0, end_time=3, 
                        save=False, wlen=2048, nfft=2048, sliding_w=0.4, cut_low_frequency=3, 
                        cut_high_frequency=20, target_width_px=1167, target_height_px=875):
     """
@@ -605,8 +605,24 @@ def process_audio_file_corrected(file_path, saving_folder="./images", batch_size
     win = blackman(wlen, sym=False)
     hop = round(0.8 * wlen)  # window hop size
     try:
-        from scipy.io import wavfile
-        fs, x = wavfile.read(file_path)
+        # Check file extension to determine loading method
+        file_ext = os.path.splitext(file_path)[1].lower()
+        import librosa
+        if file_ext == '.flac':
+            
+            x, fs = librosa.load(file_path, sr=None, mono=True)
+            print(f"FLAC file detected. Recording frequency: {fs} Hz")
+        else:  # Assume WAV for all other extensions
+            from scipy.io import wavfile
+            fs, x = wavfile.read(file_path)
+            print(f"WAV file detected. Recording frequency: {fs} Hz")
+        
+        # Make sure x is float for consistent processing
+        x = x.astype(np.float32)
+        if fs != 96000:
+            # convert to 96 kHz if not already
+            x = librosa.resample(x, orig_sr=fs, target_sr=96000)
+            fs = 96000
     except FileNotFoundError:
         raise FileNotFoundError(f"File {file_path} not found.")
     
@@ -655,6 +671,126 @@ def process_audio_file_corrected(file_path, saving_folder="./images", batch_size
         # Map to 0-255 grayscale
         img_gray = np.uint8(255 * norm)
         
+        # Resize image to target dimensions; using INTER_LINEAR for smoother interpolation
+        resized =  cv2.resize(img_gray, (target_width_px, target_height_px), interpolation=cv2.INTER_NEAREST)
+        # Convert to 3-channel image by stacking the grayscale image three times
+        image = np.stack([resized, resized, resized], axis=2)
+        
+        if save:
+            image_name = os.path.join(saving_folder, f"{file_name}-{low/fs:.2f}_fast.jpg")
+            cv2.imwrite(image_name, image)
+        
+        images.append(image)
+        low += new_samples_per_slice
+
+    return images
+
+def process_audio_file(file_path, saving_folder="./images", batch_size=50, start_time=0, end_time=3, 
+                       save=False, wlen=2048, nfft=2048, sliding_w=0.4, cut_low_frequency=3, 
+                       cut_high_frequency=20, target_width_px=1167, target_height_px=875):
+    """
+    Process an audio file and generate spectrogram images.
+
+    This optimized version avoids creating matplotlib figures for every spectrogram. 
+    Instead, it converts the computed spectrogram (in dB) directly to a grayscale image,
+    crops the frequency range, normalizes the values, resizes using OpenCV, and finally
+    saves the image if requested.
+
+    Parameters:
+        file_path (str): Path to the audio file.
+        saving_folder (str): Folder to save images (if save=True).
+        batch_size (int): Number of spectrogram images to generate.
+        start_time (float): Start time in seconds.
+        end_time (float): End time in seconds.
+        save (bool): Whether to save the images.
+        wlen (int): Window length for spectrogram calculation.
+        nfft (int): Number of FFT points.
+        sliding_w (float): Duration of each slice in seconds.
+        cut_low_frequency (int): Lower frequency limit (in kHz) for the spectrogram.
+        cut_high_frequency (int): Upper frequency limit (in kHz) for the spectrogram.
+        target_width_px (int): Target image width in pixels.
+        target_height_px (int): Target image height in pixels.
+
+    Returns:
+        images (list): List of spectrogram images as numpy arrays.
+        
+    Raises:
+        FileNotFoundError: If the audio file is not found.
+    """
+    import os
+    import numpy as np
+    import cv2
+    from scipy.signal import spectrogram
+    # Use NumPy’s Blackman window; alternatively, you can import from scipy.signal.windows
+    win = blackman(wlen, sym=False)
+    hop = round(0.8 * wlen)  # window hop size
+    # Check file type and read accordingly
+    file_ext = os.path.splitext(file_path)[1].lower()
+    if file_ext == '.flac':
+        # try:
+        #     import soundfile as sf
+        #     x, fs = sf.read(file_path)
+        # except ImportError:
+            # Fallback to librosa if soundfile is not available
+        try:
+            import librosa
+            x, fs = librosa.load(file_path, sr=None)  # sr=None preserves original sample rate
+        except ImportError:
+            raise ImportError("Please install soundfile or librosa to process FLAC files.")
+    else:
+        try:
+            from scipy.io import wavfile
+            fs, x = wavfile.read(file_path)
+        except FileNotFoundError:
+            raise FileNotFoundError(f"File {file_path} not found.")
+    
+    # Create saving folder if saving is enabled
+    if save and not os.path.exists(saving_folder):
+        os.makedirs(saving_folder)
+    
+    images = []
+    file_name = os.path.splitext(os.path.basename(file_path))[0]
+    N = len(x)
+    if end_time is not None:
+        N = min(N, int(end_time * fs))
+    low = int(start_time * fs)
+    new_samples_per_slice = int(sliding_w * fs)
+    samples_per_slice = int(0.8 * fs)
+
+    # Pre-calculate frequency cropping indices later using the frequency array (f) from the first slice
+    first_slice = True
+    for _ in range(batch_size):
+        if low + samples_per_slice > N:
+            break
+        
+        x_w = x[low:low + samples_per_slice]
+        win = blackman(wlen, sym=False)
+        f, t, Sxx = spectrogram(x_w, fs, nperseg=wlen, noverlap=wlen-hop, nfft=nfft, window=win, scaling='density', mode='psd')
+        # Convert to dB scale as in original
+        Sxx = 10 * np.log10(np.abs(Sxx) + 1e-19)
+        # Normalize Sxx to 0-255
+        Sxx = (Sxx - np.min(Sxx)) / (np.max(Sxx) - np.min(Sxx)) * 255
+
+        if first_slice:
+            # f is in Hz; use kHz limits
+            low_freq_hz = cut_low_frequency * 1000
+            high_freq_hz = cut_high_frequency * 1000
+            low_idx = np.searchsorted(f, low_freq_hz)
+            high_idx = np.searchsorted(f, high_freq_hz)
+            first_slice = False
+        
+        # Crop frequency axis as original (note: original divides f by 1000 for plotting,
+        # but we use the indices determined from the Hz values)
+        Sxx_cropped = Sxx[low_idx:high_idx, :]
+        
+        # reverse the y axis 
+        Sxx_cropped = np.flipud(Sxx_cropped)
+
+        # Normalize the spectrogram to 0-255 grayscale
+        Sxx_cropped_uint8 = np.clip(Sxx_cropped, 0, 255).astype(np.uint8)
+        # Convert to grayscale image (already grayscale, no need for color conversion if Sxx is 2D)
+        img_gray = Sxx_cropped_uint8
+
         # Resize image to target dimensions; using INTER_LINEAR for smoother interpolation
         resized =  cv2.resize(img_gray, (target_width_px, target_height_px), interpolation=cv2.INTER_NEAREST)
         # Convert to 3-channel image by stacking the grayscale image three times

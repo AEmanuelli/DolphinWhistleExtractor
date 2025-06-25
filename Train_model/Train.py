@@ -16,7 +16,7 @@ import gc
 #%% NECESSARY VARIABLES
 
 IMG_SIZE = 224
-batch_size = 32
+batch_size = 16
 directory = "DNN_whistle_detection/Train_model"
 
 train_data = pd.read_csv('DNN_whistle_detection/Train_model/dolphin_signal_train.csv')
