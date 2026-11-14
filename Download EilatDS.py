@@ -1,85 +1,80 @@
+"""Download the Eilat dolphin dataset (FLAC recordings) from the Haifa CSMS server.
+
+The list of files is read from a text file containing the server's download
+links (every ``&files[]=<name>.flac`` occurrence is picked up). Files are
+requested in small batches; when several files are requested at once the
+server answers with a ZIP archive, which is unpacked into the output folder.
+
+Usage:
+    python "Download EilatDS.py" [--file_list ../file_list.txt] [--output EilatDS] [--batch_size 6]
+"""
+import argparse
+import io
+import os
 import re
+import zipfile
+
+BASE_URL = "https://csms-acoustic.haifa.ac.il/index.php/s/2UmUoK80Izt0Roe/download?path=%2FData"
+
 
 def extract_filenames_from_file(filepath):
-    """
-    Opens a text file, reads its content, and extracts a list of filenames
-    based on the pattern '&files[]=filename.flac'.
-
-    Args:
-        filepath (str): The path to the text file.
-
-    Returns:
-        list: A list of filenames extracted from the file, or None if the file
-              cannot be opened or no filenames are found.
-    """
-    try:
-        with open(filepath, 'r') as file:
-            content = file.read()
-            # Use regular expression to find filenames after '&files[]=' and ending with '.flac'
-            filenames = re.findall(r'&files\[\]=(.*?\.flac)', content)
-            return filenames
-    except FileNotFoundError:
-        print(f"Error: File not found at path: {filepath}")
-        return None
-    except Exception as e:
-        print(f"An error occurred: {e}")
-        return None
-
-# Example usage:
-file_path = '../file_list.txt'  # Replace 'your_file.txt' with the actual path to your file
-
-extracted_file_list = extract_filenames_from_file(file_path)
+    """Return the file names found after '&files[]=' (ending with '.flac') in a text file."""
+    with open(filepath, 'r') as file:
+        return re.findall(r'&files\[\]=(.*?\.flac)', file.read())
 
 
-base_url = "https://csms-acoustic.haifa.ac.il/index.php/s/2UmUoK80Izt0Roe/download?path=%2FData&files[]="
+def save_response(content, batch_files, saving_folder):
+    """Write a server answer to disk: a ZIP of several files, or a single file."""
+    if zipfile.is_zipfile(io.BytesIO(content)):
+        with zipfile.ZipFile(io.BytesIO(content)) as archive:
+            for member in archive.infolist():
+                if member.is_dir():
+                    continue
+                target = os.path.join(saving_folder, os.path.basename(member.filename))
+                with archive.open(member) as source, open(target, 'wb') as destination:
+                    destination.write(source.read())
+                print(f"Saved {os.path.basename(target)}")
+    elif len(batch_files) == 1:
+        target = os.path.join(saving_folder, os.path.basename(batch_files[0]))
+        with open(target, 'wb') as f:
+            f.write(content)
+        print(f"Saved {os.path.basename(target)}")
+    else:
+        raise ValueError("Unexpected answer from the server (not a ZIP archive) for a multi-file request")
 
-batch_size = 6
 
-import os
-import requests
-saving_folder = "EilatDS"
-if not os.path.exists(saving_folder):
-    os.makedirs(saving_folder)
+def download(file_list, saving_folder="EilatDS", batch_size=6):
+    import requests
 
-# Process files in groups of batch_size 
-for i in range(0, len(extracted_file_list), batch_size ):
+    os.makedirs(saving_folder, exist_ok=True)
+    for i in range(0, len(file_list), batch_size):
+        batch_number = i // batch_size + 1
+        # Only request the files that are still missing
+        batch_files = [f for f in file_list[i:i + batch_size]
+                       if not os.path.exists(os.path.join(saving_folder, os.path.basename(f)))]
+        if not batch_files:
+            print(f"Skipping batch {batch_number} (all files already downloaded)")
+            continue
 
-    # Take up to batch_size  files for this batch
-    batch_files = extracted_file_list[i:i+batch_size ]
-    
-    # Check which files already exist
-    all_files_exist = True
-    for file in batch_files:
-        file_name = file.split('/')[-1]
-        file_path = os.path.join(saving_folder, file_name)
-        if not os.path.exists(file_path):
-            all_files_exist = False
-            break
-    
-    # Skip batch if all files already exist
-    if all_files_exist:
-        print(f"Skipping batch {i//batch_size  + 1} (all files already downloaded)")
-        continue
-    
-    # Construct URL with multiple files
-    file_url = base_url
-    for file in batch_files:
-        file_url += file + "&files[]="
-    file_url = file_url[:-9]  # Remove the trailing "&files[]="
-    
-    print(f"Downloading batch {i//batch_size  + 1} with {len(batch_files)} files")
-    print(f"URL: {file_url}")
-    
-    # Download the batch
-    response = requests.get(file_url)
-    
-    # Save each file from the batch, skipping those that already exist
-    for file in batch_files:
-        file_name = file.split('/')[-1]
-        file_path = os.path.join(saving_folder, file_name)
-        if os.path.exists(file_path):
-            print(f"Skipping {file_name} (already downloaded)")
-        else:
-            with open(file_path, 'wb') as f:
-                f.write(response.content)
-            print(f"Saved {file_name}")
+        url = BASE_URL + "".join(f"&files[]={name}" for name in batch_files)
+        print(f"Downloading batch {batch_number} with {len(batch_files)} files")
+        response = requests.get(url, timeout=600)
+        response.raise_for_status()
+        save_response(response.content, batch_files, saving_folder)
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument('--file_list', default='../file_list.txt', help='Text file containing the download links')
+    parser.add_argument('--output', default='EilatDS', help='Folder where the recordings are saved')
+    parser.add_argument('--batch_size', type=int, default=6, help='Number of files requested at once')
+    args = parser.parse_args()
+
+    file_list = extract_filenames_from_file(args.file_list)
+    if not file_list:
+        parser.error(f"No .flac file name found in '{args.file_list}'")
+    download(file_list, args.output, args.batch_size)
+
+
+if __name__ == "__main__":
+    main()

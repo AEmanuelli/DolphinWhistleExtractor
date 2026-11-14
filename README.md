@@ -5,156 +5,151 @@ A comprehensive tool for detecting and extracting dolphin whistles from audio an
 ## 🌟 Features
 
 - Automated detection of dolphin whistles using deep learning
-- User-friendly GUI interface
+- User-friendly GUI
 - Command-line interface for advanced users
-- Multi-threaded processing for improved performance
-- Exportable results in CSV format
-- Automatic extraction of detected whistle segments
+- WAV and FLAC recordings
+- Multi-threaded processing, resumable runs
+- Results exported as CSV
+- Automatic extraction of the detected whistle segments
 
 ## 📋 Prerequisites
 
-- Python 3.9
-
+- Python 3.9 – 3.11
+- `tkinter` for the GUIs (see below)
+- `ffmpeg` only if you extract video clips
 
 ## Installation
 
 1. Clone the repository:
 ```bash
-git clone https://github.com/AEmanuelli/Dolphins.git
-cd Dolphins/DNN_whistle_detection/
+git clone https://github.com/AEmanuelli/DolphinWhistleExtractor.git
+cd DolphinWhistleExtractor
 ```
 
 2. Set up a virtual environment (recommended):
 ```bash
-# Using conda (recommended)
+# Using conda
 conda create -n DolphinWhistleExtractor python=3.9
 conda activate DolphinWhistleExtractor
 conda install tk
-
-```markdown
+```
+```bash
 # OR using venv
 python -m venv venv
 source venv/bin/activate  # On Windows: venv\Scripts\activate
 ```
 
-3. Install tkinter
-- Ubuntu
-```bash
-sudo apt-get install python3-tk 
-```
-
-- Fedora
-```bash
-sudo dnf install python3-tkinter
-```
-
-- MacOS
-```bash
-brew install python-tk
-```
-
+3. Install tkinter (only needed with venv):
+   - Ubuntu: `sudo apt-get install python3-tk`
+   - Fedora: `sudo dnf install python3-tkinter`
+   - macOS: `brew install python-tk`
 
 4. Install dependencies:
-- **Option 1**: Use the GUI's "Install Dependencies" button
-- **Option 2**: Manual installation via command line:
-  ```bash
-  pip install -r requirements.txt
-  ```
+```bash
+pip install -r requirements.txt
+```
+   (or use the "Install Dependencies" button of the inference GUI)
 
 ## 💻 Usage
 
-### GUI Interface (Recommended)
-
-1. Launch the GUI:
-```bash
-python GUI_app.py
-```
-
-2. In the GUI:
-   - Select your pre-trained model
-   - Choose input folder containing recordings
-   - Select output folder for results
-   - Configure processing parameters:
-     - Start/End times
-     - Batch size
-     - Frequency cutoffs (CLF/CHF)
-     - Image normalization options
-   - Click "Start Processing"
-
-### Command Line Interface
-
-For advanced users who prefer command-line operations:
+### GUI (recommended)
 
 ```bash
-# Run complete pipeline
-python main.py --input_folder /path/to/recordings --output_folder /path/to/output
-
-# Process specific files
-python predict_and_extract_online.py --input_folder /path/to/recordings --model_path /path/to/model
-
-# Process predictions
-python process_predictions.py --predictions_folder /path/to/predictions
+python Predict_and_extract/GUIs/GUI_inference.py
 ```
+
+In the GUI:
+- Select the model (defaults to `models/base_MobileNetV2.keras`)
+- Choose the input folder containing the recordings (`.wav` or `.flac`)
+- Select the output folder for results
+- Configure processing parameters (start/end times, batch size, frequency cutoffs CLF/CHF, image normalization)
+- Click "Start Processing"
+
+### Command line
+
+```bash
+cd Predict_and_extract
+
+# Detect whistles and save the positive spectrograms
+python main.py --recordings /path/to/recordings --saving_folder /path/to/output --save_p
+
+# Whole recordings (default: first 30 min), then extract the detected whistles as .wav clips
+python main.py --recordings /path/to/recordings --saving_folder /path/to/output --end_time -1 --extract
+
+# All options
+python main.py --help
+```
+
+Main options:
+
+| Option | Default | Meaning |
+|---|---|---|
+| `--model_path` | `models/base_MobileNetV2.keras` | Keras model used for detection |
+| `--start_time` / `--end_time` | `0` / `1800` | Portion of each recording to analyse, in seconds (`--end_time -1`: whole file) |
+| `--CLF` / `--CHF` | `3` / `20` | Frequency band (kHz) shown in the spectrograms |
+| `--threshold` | `0.5` | Minimum score for a window to count as a whistle |
+| `--image_norm` | off | Divide images by 255 (only for models trained on normalized images) |
+| `--save_p` / `--save` | off | Save positive / all spectrogram images |
+| `--extract` | off | Cut the detected whistles out of the recordings (audio clips) |
+| `--specific_files` | – | Text file listing the recordings to process (one name per line) |
+
+The last `--recordings` / `--saving_folder` used are remembered in `~/.predict_extract_config.json`.
+
+### Output
+
+```
+<saving_folder>/
+├── <recording>/
+│   ├── <recording>.wav_predictions.csv   # file_name, initial_point, finish_point, confidence
+│   ├── positive/                         # spectrograms of the detected windows (--save_p)
+│   └── pas_d_extraits/                   # note explaining why nothing was extracted (--extract)
+└── extracted_audio/<recording>/extrait_<start>_<end>.wav   # with --extract
+```
+
+A recording that already has a predictions CSV is skipped, so an interrupted run can simply be restarted.
+A recording that fails (e.g. corrupted file) gets no CSV and is retried on the next run.
+
+## 🔧 How it works
+
+1. **Detection** (`predict_and_extract_online.py`): each recording is cut into 0.8 s windows, one every 0.4 s.
+   Every window becomes a grayscale spectrogram image (`utils.py`) classified by the CNN.
+   In the CSV a detection is reported as the 0.4 s step `[initial_point, finish_point]` at which its window starts.
+2. **Extraction** (`process_predictions.py`): detections less than 3 s apart are merged; merged segments longer
+   than 5 s are cut out of the recording. Audio clips keep the original sampling rate and bit depth.
+   Video clips (with or without the hydrophone audio) are available from Python via
+   `process_prediction_files_in_folder(..., audio_only=False)`.
 
 ## 📁 Project Structure
 
 ```
-├── __init__.py
-├── models/
-├── Models_vs_years_comparison
-│   ├── figs/
-│   └── models_vs_years_predictions.ipynb
-├── Predict_and_extract
-│   ├── Extraction_with_kaggle
-│   │   ├── classify_again.ipynb
-│   │   ├── utility_script (extraction_using_kaggle).py
-│   │   └── Whistle_pipeline_(extraction_with_kaggle).ipynb
-│   ├── __init__.py
-│   ├── main.py
-│   ├── GUI_app.py
-│   ├── maintenance.py
-│   ├── pipeline.ipynb
-│   ├── predict_and_extract_online.py
-│   ├── predict_online.py
-│   ├── process_predictions.py
-│   ├── Show_newly_detected_stuff.py
-│   ├── utils.py
-│   └── vidéoaudio.py
-├── README.md (this file)
-├── requirements.txt
-└── Train_model
-    ├── Create_dataset
-    │   ├── AllWhistlesSubClustering_final.csv
-    │   ├── create_batch_data.py
-    │   ├── DNN précision - CSV_EVAL.csv
-    │   ├── dolphin_signal_train.csv
-    │   ├── save_spectrogram.m
-    │   └── timings
-    │       ├── negatives.csv
-    │       └── positives.csv
-    ├── csv2dataset.py
-    ├── dataset2csv.py
-    ├── fine-tune2.ipynb
-    ├── fine-tune.ipynb
-    ├── __init__.py
-    └── Train.py
+├── models/                         # pre-trained Keras models (see models/README.txt)
+├── Predict_and_extract/
+│   ├── main.py                     # command-line entry point
+│   ├── predict_and_extract_online.py   # detection pipeline
+│   ├── process_predictions.py      # extraction of detected whistles (audio / video)
+│   ├── utils.py                    # audio loading, spectrogram images, interval helpers
+│   ├── count_whistles.py           # count whistle groups in a predictions CSV
+│   ├── GUIs/                       # inference GUI + model testing / comparison GUIs
+│   ├── Extraction_with_kaggle/     # notebooks & scripts to run the pipeline on Kaggle
+│   └── ...                         # research scripts (see note below)
+├── Train_model/                    # dataset creation and training scripts / notebooks
+├── Models_vs_years_comparison/     # comparison of the models across recording years
+├── tests/                          # pytest suite
+└── requirements.txt
 ```
 
-## 🔧 Key Components
+> **Note** — `maintenance.py`, `Show_newly_detected_stuff.py`, `prepare_audio.py`, `test.py`, `predict_online.py`
+> and the `Train_model/` scripts are research scripts kept for reference: they contain paths specific to the
+> original analysis machines and must be adapted before use.
 
-### Prediction Pipeline
+## 🧪 Tests
 
-The system uses a three-stage pipeline:
-1. **Detection**: Neural network processes audio/video files
-2. **Extraction**: Identified whistles are extracted
-3. **Post-processing**: Results are organized and saved
+```bash
+pip install -r requirements-dev.txt
+python -m pytest
+```
 
-### Available Tools
-
-- **GUI_app.py**: User-friendly interface for all operations
-- **predict_and_extract_online.py**: Core detection engine
-- **process_predictions.py**: Results processor
-- **Show_newly_detected_stuff.py**: Comparison tool for new model outputs
+The tests use a synthetic recording and a fake model, so they run in a few seconds without TensorFlow.
 
 ## 📚 Additional Resources
 

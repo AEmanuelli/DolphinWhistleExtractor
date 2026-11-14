@@ -5,7 +5,19 @@ from email.mime.text import MIMEText
 from email.mime.application import MIMEApplication
 import os
 
-def send_email(username='aemanuelli235@gmail.com', password='btytcsidrjvryqtn', to_address='alexis.emanuelli@psl.eu', subject='Sujet de l\'email', msg='Contenu de l\'email', file_path=None):
+def send_email(username=None, password=None, to_address=None, subject='Sujet de l\'email', msg='Contenu de l\'email', file_path=None):
+    """Send an e-mail through Gmail.
+
+    Credentials are never stored in the code: they are read from the
+    EMAIL_USERNAME / EMAIL_APP_PASSWORD environment variables (e.g. Kaggle
+    secrets) when not given explicitly. EMAIL_TO defaults to the sender.
+    """
+    username = username or os.environ.get("EMAIL_USERNAME")
+    password = password or os.environ.get("EMAIL_APP_PASSWORD")
+    to_address = to_address or os.environ.get("EMAIL_TO") or username
+    if not username or not password:
+        raise RuntimeError("Set EMAIL_USERNAME and EMAIL_APP_PASSWORD to send e-mails.")
+
     # Création de l'objet MIMEMultipart
     message = MIMEMultipart()
 

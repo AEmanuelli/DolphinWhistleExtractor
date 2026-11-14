@@ -1,39 +1,31 @@
-Corbeille
-DNN_whistle_detection/models/model_vgg.h5
-Image_detection/yolov5/
-DNN_whistle_detection/recordings/Exp_01_Feb_2024_1145_channel_0.wav
-Eval model /
-Eval modelExp_01_Jul_2022_1145_channel_1
-extraits
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ipynb_checkpoints/
+*.egg-info/
 
-*.h5
-extrait_1637_1649.mp4
-<<<<<<< Updated upstream
-<<<<<<< Updated upstream
-<<<<<<< Updated upstream
-*.pyc
-=======
->>>>>>> Stashed changes
-DNN_whistle_detection/__pycache__/predict_online_parallel.cpython-39.pyc
-=======
->>>>>>> Stashed changes
-=======
->>>>>>> Stashed changes
-DNN_whistle_detection/fichiers_corrompus.txt
-/home/alexis/Documents/GitHub/Dolphins/DNN_whistle_detection/.gitignore
-DNN_whistle_detection/__pycache__/whistle2vid.cpython-39.pyc
-/home/alexis/Documents/GitHub/Dolphins/DNN_whistle_detection/__pycache__/whistle2vid.cpython-39.pyc
+# Virtual environments
+venv/
+.venv/
+Dolphins_env/
+
+# OS / editor files
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Data, recordings and generated outputs
 *.mp4
-DNN_whistle_detection/main.py
-DNN_whistle_detection/main.py
+*.jpg
+*.h5
+*.prof
+recordings/
+processed*/
+extraits/
+EilatDS/
+Corbeille/
+fichiers_corrompus.txt
 Video_against_spectro.tar.gz
-DNN_yolo_dolphin_recognition/yolov5/
-*.jpg
-*.jpg
-/home/alexis/Documents/GitHub/Dolphins/Dolphins_env
-Dolphins_env
-DNN_whistle_detection/Train_model/whistles_from_csv
-DNN_yolo_dolphin_image_recognition/yolov5/
-processed
-processed_cat
-processed*
+analysis_results/

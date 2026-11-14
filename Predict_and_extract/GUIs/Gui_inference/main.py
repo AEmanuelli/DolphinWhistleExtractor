@@ -11,7 +11,7 @@ from datetime import datetime
 
 from style_ui import ModernUI  # Import ModernUI
 from ui_components import AnimatedProgress, TooltipManager # Import custom UI components
-from default_config import default_model_path, default_recordings, default_saving_folder, cwd # Import configurations
+from default_config import default_model_path, default_recordings, default_saving_folder, cwd, repo_root # Import configurations
 
 class ProcessingGUI:
     def __init__(self, root):
@@ -805,12 +805,15 @@ class ProcessingGUI:
             original_stderr = sys.stderr
             sys.stdout = qw
             sys.stderr = qw
+            # Show the pipeline's log messages (per-file results, failures) in the log tab
+            import logging
+            logging.basicConfig(level=logging.INFO, stream=qw, format='%(levelname)s - %(message)s', force=True)
 
             try:
                 # Import the processing module here to avoid any import errors
                 # affecting the main GUI
                 try:
-                    from Predict_and_extract.predict_and_extract_online import process_predict_extract
+                    from predict_and_extract_online import process_predict_extract
                 except ImportError as e:
                     error_msg = (f"Could not import the processing module.\n"
                                 f"Error: {str(e)}\n\n"
@@ -839,7 +842,7 @@ class ProcessingGUI:
                     binary_threshold=inputs['threshold'],
                     max_workers=inputs['max_workers'],
                     specific_files=inputs['specific_files'],
-                    progress_callback=update_progress  # This assumes your function accepts this parameter
+                    progress_callback=update_progress
                 )
 
                 # Add a completion message to the log
@@ -876,6 +879,9 @@ class ProcessingGUI:
                             f"{str(e)}\n\n"
                             f"See the Processing Log tab for more details.")
 
+                # Keep the message: `e` no longer exists when the dialog is shown later
+                error_message = str(e)
+
                 # Log the full error
                 self.output_queue.put(f"ERROR: {str(e)}")
                 self.output_queue.put(error_details)
@@ -898,7 +904,7 @@ class ProcessingGUI:
                     ttk.Label(main_frame, text="An error occurred during processing:",
                             font=("Segoe UI", 10, "bold")).pack(anchor="w", pady=(0, 5))
 
-                    ttk.Label(main_frame, text=str(e), foreground="red").pack(anchor="w", pady=(0, 10))
+                    ttk.Label(main_frame, text=error_message, foreground="red").pack(anchor="w", pady=(0, 10))
 
                     # Scrollable error details
                     ttk.Label(main_frame, text="Error details:").pack(anchor="w")
@@ -948,7 +954,7 @@ class ProcessingGUI:
 
     def install_dependencies(self):
         """Install dependencies from requirements.txt using pip"""
-        requirements_path = "requirements.txt"
+        requirements_path = os.path.join(repo_root, "requirements.txt")
         if not os.path.exists(requirements_path):
             messagebox.showerror("Error", "requirements.txt not found!")
             return
