@@ -1,14 +1,19 @@
 import os
+import sys
 from datetime import datetime
 
 # -----------------------
-# Default Paths based on Current Working Directory
+# Default paths (relative to the repository, never machine-specific)
 # -----------------------
-cwd = os.getcwd()
-default_model_path = os.path.join(cwd, "models", "base_MobileNetV2.keras")
-default_recordings = "/home/emanuelli/Bureau/Watkins/68027" # Or use os.path.join(cwd, "recordings") for relative
-default_saving_folder = "/home/emanuelli/Bureau/Watkins/68027/processed" # Or use os.path.join(cwd, "processed") for relative
+current_dir = os.path.dirname(os.path.abspath(__file__))
+predict_dir = os.path.dirname(os.path.dirname(current_dir))  # .../Predict_and_extract
+repo_root = os.path.dirname(predict_dir)
 
-if not os.path.exists(default_saving_folder):
-    os.makedirs(default_saving_folder, exist_ok=True)
-default_saving_folder = os.path.join(default_saving_folder, f"processed_{datetime.now().strftime('%Y%m%d_%H%M%S')}")
+# Make the pipeline modules importable whatever the working directory
+if predict_dir not in sys.path:
+    sys.path.insert(0, predict_dir)
+
+cwd = os.getcwd()
+default_model_path = os.path.join(repo_root, "models", "base_MobileNetV2.keras")
+default_recordings = os.path.join(cwd, "recordings")
+default_saving_folder = os.path.join(cwd, "processed", f"processed_{datetime.now().strftime('%Y%m%d_%H%M%S')}")

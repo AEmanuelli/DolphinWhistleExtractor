@@ -1,22 +1,28 @@
+"""Shared helpers for the whistle detection pipeline.
+
+- interval handling (reading prediction CSVs, merging detections),
+- audio loading and spectrogram image generation (the images fed to the CNN),
+- small file-naming / CSV utilities.
+
+Heavy optional dependencies (librosa, matplotlib) are imported lazily so that
+importing this module stays cheap.
+"""
+import csv
 import os
 import re
+
 import numpy as np
 import pandas as pd
 from scipy.io import wavfile
 from scipy.signal import spectrogram
 from scipy.signal.windows import blackman
-import matplotlib
-matplotlib.use('Agg')
-import matplotlib.pyplot as plt
-import csv
-import moviepy.editor as mp
-import os
-from tqdm import tqdm
 
-import librosa
-import numpy as np
+# Duration (s) of the audio window turned into one spectrogram image, and the
+# hop (s) between two consecutive windows. The models were trained with these.
+WINDOW_DURATION = 0.8
+WINDOW_HOP = 0.4
+AUDIO_EXTENSIONS = (".wav", ".flac")
 
-#%%
 # =============================================================================
 #********************* FUNCTIONS 
 # =============================================================================
@@ -90,27 +96,28 @@ def convertir_texte_en_csv(fichier_texte, fichier_csv, delimiteur="\t", skip_lin
     print("Conversion terminée avec succès.")
 
 def lire_csv_extraits(nom_fichier):
+    """
+    Read (start, end) intervals from a predictions CSV.
+
+    The first line is a header. Rows are either ``start,end,...`` or
+    ``file_name,start,end,...``; empty or malformed rows are ignored.
+    """
     intervals = []
     with open(nom_fichier, newline='') as csvfile:
         reader = csv.reader(csvfile)
-        next(reader)  # Passer à la deuxième ligne pour ignorer le titre des colonnes
+        next(reader, None)  # skip the header
         for row in reader:
-            try:
-                # Convertir les valeurs en nombres flottants et les ajouter à la liste
-                debut = float(row[0])
-                fin = float(row[1])
-                intervals.append((debut, fin))
-            except ValueError:
-                # Gérer les erreurs de conversion en nombres flottants dans la première colonne
-                #print("Erreur de conversion en nombre flottant. La première colonne sera ignorée.")
-                debut = float(row[1])
-                fin = float(row[2])  # Commencer à partir de la deuxième colonne
-                intervals.append((debut, fin))
+            for first in (0, 1):  # with or without a leading file-name column
+                try:
+                    intervals.append((float(row[first]), float(row[first + 1])))
+                    break
+                except (ValueError, IndexError):
+                    continue
     return intervals
 
 def fusionner_intervalles(intervalles, hwindow=4):
-    # Trier les intervalles par début
-    intervalles.sort(key=lambda x: x[0])
+    # Trier les intervalles par début (sans modifier la liste fournie)
+    intervalles = sorted(intervalles, key=lambda x: x[0])
     
     # Initialiser la liste résultante
     intervalles_fusionnes = []
@@ -132,20 +139,10 @@ def fusionner_intervalles(intervalles, hwindow=4):
             # Fusionner l'intervalle avec le dernier intervalle fusionné
             intervalles_fusionnes[-1] = (intervalles_fusionnes[-1][0], max(intervalles_fusionnes[-1][1], fin_arrondi))
     
-    # Ajuster les bornes du premier et du dernier intervalle fusionné si nécessaire
-    if intervalles_fusionnes:
-        premier_intervalle = intervalles_fusionnes[0]
-        dernier_intervalle = intervalles_fusionnes[-1]
-        
-        if premier_intervalle[0] < 0:
-            premier_intervalle = (0, premier_intervalle[1])
-        
-        # if dernier_intervalle[1] > 1800:
-        #     dernier_intervalle = (dernier_intervalle[0], 1800)
-        
-        intervalles_fusionnes[0] = premier_intervalle
-        intervalles_fusionnes[-1] = dernier_intervalle
-    
+    # Le premier intervalle ne peut pas commencer avant le début de l'enregistrement
+    if intervalles_fusionnes and intervalles_fusionnes[0][0] < 0:
+        intervalles_fusionnes[0] = (0, intervalles_fusionnes[0][1])
+
     return intervalles_fusionnes
 
 
@@ -166,8 +163,8 @@ def fusionner_intervalles_avec_seuil(intervalles, fusion_threshold=3, duration_t
     Returns:
         list: Une liste d'intervalles fusionnés qui satisfont les critères de fusion et de durée minimale.
     """
-    # Trier les intervalles par début
-    intervalles.sort(key=lambda x: x[0])
+    # Trier les intervalles par début (sans modifier la liste fournie)
+    intervalles = sorted(intervalles, key=lambda x: x[0])
     
     # Initialiser la liste résultante
     intervalles_fusionnes = []
@@ -366,6 +363,8 @@ def wav_to_spec_librosa(recording_path, stride_ms=5.0, window_ms=10.0, max_freq=
 
     """
     
+    import librosa
+
     # Load audio file
     samples, sample_rate = librosa.load(recording_path, sr=None, mono=True)
     
@@ -409,6 +408,8 @@ def plot_spectogram(specgram, freqs, times, ms=False, log=True, eps= 1e-14):
     ax
 
     """
+    import matplotlib.pyplot as plt
+
     if ms :
         fig, ax = plt.subplots(figsize=(10, 5))
         if log :
@@ -465,13 +466,11 @@ def prepare_csv_data(file_path, record_names, positive_initial, positive_finish)
     return record_names, positive_initial, positive_finish
 
 def save_csv(record_names, positive_initial, positive_finish, class_1_scores, csv_path):
-    df = {'file_name': record_names,
-    'initial_point': positive_initial,
-    'finish_point': positive_finish,
-    'confidence': class_1_scores}
-
-    df = pd.DataFrame(df)
-    
+    """Write detections to a predictions CSV (header only when there is no detection)."""
+    df = pd.DataFrame({'file_name': record_names,
+                       'initial_point': positive_initial,
+                       'finish_point': positive_finish,
+                       'confidence': class_1_scores})
     df.to_csv(csv_path, index=False)
 
 def process_audio_file_old(file_path, saving_folder="./images", batch_size=50, start_time=0, end_time=None, save=False, wlen=2048,
@@ -501,6 +500,10 @@ def process_audio_file_old(file_path, saving_folder="./images", batch_size=50, s
     Raises:
     - FileNotFoundError: If the audio file is not found.
     """
+
+    import matplotlib
+    matplotlib.use('Agg')
+    import matplotlib.pyplot as plt
 
     try:
         # Load sound recording
@@ -565,289 +568,139 @@ def process_audio_file_old(file_path, saving_folder="./images", batch_size=50, s
 
 
 
-def process_audio_file_fast(file_path, saving_folder="./images", batch_size=50, start_time=0, end_time=3, 
-                       save=False, wlen=2048, nfft=2048, sliding_w=0.4, cut_low_frequency=3, 
-                       cut_high_frequency=20, target_width_px=1167, target_height_px=875):
+def load_audio(file_path):
     """
-    Process an audio file and generate spectrogram images.
+    Load a recording as a mono signal.
 
-    This optimized version avoids creating matplotlib figures for every spectrogram. 
-    Instead, it converts the computed spectrogram (in dB) directly to a grayscale image,
-    crops the frequency range, normalizes the values, resizes using OpenCV, and finally
-    saves the image if requested.
-
-    Parameters:
-        file_path (str): Path to the audio file.
-        saving_folder (str): Folder to save images (if save=True).
-        batch_size (int): Number of spectrogram images to generate.
-        start_time (float): Start time in seconds.
-        end_time (float): End time in seconds.
-        save (bool): Whether to save the images.
-        wlen (int): Window length for spectrogram calculation.
-        nfft (int): Number of FFT points.
-        sliding_w (float): Duration of each slice in seconds.
-        cut_low_frequency (int): Lower frequency limit (in kHz) for the spectrogram.
-        cut_high_frequency (int): Upper frequency limit (in kHz) for the spectrogram.
-        target_width_px (int): Target image width in pixels.
-        target_height_px (int): Target image height in pixels.
+    WAV files are read with scipy (native integer samples), FLAC files with
+    librosa (float samples). Multi-channel recordings are reduced to their
+    first channel.
 
     Returns:
-        images (list): List of spectrogram images as numpy arrays.
-        
-    Raises:
-        FileNotFoundError: If the audio file is not found.
+        (fs, x): sampling rate in Hz and 1-D numpy array of samples.
     """
-    import os
-    import numpy as np
-    import cv2
-    from scipy.signal import spectrogram
-    # Use NumPy’s Blackman window; alternatively, you can import from scipy.signal.windows
-    win = blackman(wlen, sym=False)
-    hop = round(0.8 * wlen)  # window hop size
-    try:
-        # Check file extension to determine loading method
-        file_ext = os.path.splitext(file_path)[1].lower()
-        import librosa
-        if file_ext == '.flac':
-            
-            x, fs = librosa.load(file_path, sr=None, mono=True)
-            print(f"FLAC file detected. Recording frequency: {fs} Hz")
-        else:  # Assume WAV for all other extensions
-            from scipy.io import wavfile
-            fs, x = wavfile.read(file_path)
-            print(f"WAV file detected. Recording frequency: {fs} Hz")
-        
-        # Make sure x is float for consistent processing
-        x = x.astype(np.float32)
-        if fs != 96000:
-            # convert to 96 kHz if not already
-            x = librosa.resample(x, orig_sr=fs, target_sr=96000)
-            fs = 96000
-    except FileNotFoundError:
+    if not os.path.exists(file_path):
         raise FileNotFoundError(f"File {file_path} not found.")
-    
-    # Create saving folder if saving is enabled
-    if save and not os.path.exists(saving_folder):
-        os.makedirs(saving_folder)
-    
-    images = []
-    file_name = os.path.splitext(os.path.basename(file_path))[0]
-    N = len(x)
-    if end_time is not None:
-        N = min(N, int(end_time * fs))
-    low = int(start_time * fs)
-    new_samples_per_slice = int(sliding_w * fs)
-    samples_per_slice = int(0.8 * fs)
 
-    # Pre-calculate frequency cropping indices later using the frequency array (f) from the first slice
-    first_slice = True
-    for _ in range(batch_size):
-        if low + samples_per_slice > N:
-            break
-        
-        x_w = x[low:low + samples_per_slice]
-        win = blackman(wlen, sym=False)
-        f, t, Sxx = spectrogram(x_w, fs, nperseg=wlen, noverlap=wlen-hop, nfft=nfft, window=win)
-        # Convert to dB scale as in original
-        Sxx = 10 * np.log10(np.abs(Sxx) + 1e-14)
-        
-        if first_slice:
-            # f is in Hz; use kHz limits
-            low_freq_hz = cut_low_frequency * 1000
-            high_freq_hz = cut_high_frequency * 1000
-            low_idx = np.searchsorted(f, low_freq_hz)
-            high_idx = np.searchsorted(f, high_freq_hz)
-            first_slice = False
-        
-        # Crop frequency axis as original (note: original divides f by 1000 for plotting,
-        # but we use the indices determined from the Hz values)
-        Sxx_cropped = Sxx[low_idx:high_idx, :]
-        
-        # Mimic pcolormesh default normalization (per-slice dynamic range)
-        vmin = Sxx_cropped.min()
-        vmax = Sxx_cropped.max()
-        # Prevent division by zero in flat spectra
-        norm = (Sxx_cropped - vmin) / (vmax - vmin + 1e-14)
-        # Map to 0-255 grayscale
-        img_gray = np.uint8(255 * norm)
-        
-        # Resize image to target dimensions; using INTER_LINEAR for smoother interpolation
-        resized =  cv2.resize(img_gray, (target_width_px, target_height_px), interpolation=cv2.INTER_NEAREST)
-        # Convert to 3-channel image by stacking the grayscale image three times
-        image = np.stack([resized, resized, resized], axis=2)
-        
-        if save:
-            image_name = os.path.join(saving_folder, f"{file_name}-{low/fs:.2f}_fast.jpg")
-            cv2.imwrite(image_name, image)
-        
-        images.append(image)
-        low += new_samples_per_slice
-
-    return images
-
-def process_audio_file(file_path, saving_folder="./images", batch_size=50, start_time=0, end_time=3, 
-                       save=False, wlen=2048, nfft=2048, sliding_w=0.4, cut_low_frequency=3, 
-                       cut_high_frequency=20, target_width_px=1167, target_height_px=875):
-    """
-    Process an audio file and generate spectrogram images.
-
-    This optimized version avoids creating matplotlib figures for every spectrogram. 
-    Instead, it converts the computed spectrogram (in dB) directly to a grayscale image,
-    crops the frequency range, normalizes the values, resizes using OpenCV, and finally
-    saves the image if requested.
-
-    Parameters:
-        file_path (str): Path to the audio file.
-        saving_folder (str): Folder to save images (if save=True).
-        batch_size (int): Number of spectrogram images to generate.
-        start_time (float): Start time in seconds.
-        end_time (float): End time in seconds.
-        save (bool): Whether to save the images.
-        wlen (int): Window length for spectrogram calculation.
-        nfft (int): Number of FFT points.
-        sliding_w (float): Duration of each slice in seconds.
-        cut_low_frequency (int): Lower frequency limit (in kHz) for the spectrogram.
-        cut_high_frequency (int): Upper frequency limit (in kHz) for the spectrogram.
-        target_width_px (int): Target image width in pixels.
-        target_height_px (int): Target image height in pixels.
-
-    Returns:
-        images (list): List of spectrogram images as numpy arrays.
-        
-    Raises:
-        FileNotFoundError: If the audio file is not found.
-    """
-    import os
-    import numpy as np
-    import cv2
-    from scipy.signal import spectrogram
-    # Use NumPy’s Blackman window; alternatively, you can import from scipy.signal.windows
-    win = blackman(wlen, sym=False)
-    hop = round(0.8 * wlen)  # window hop size
-    # Check file type and read accordingly
-    file_ext = os.path.splitext(file_path)[1].lower()
-    if file_ext == '.flac':
-        # try:
-        #     import soundfile as sf
-        #     x, fs = sf.read(file_path)
-        # except ImportError:
-            # Fallback to librosa if soundfile is not available
+    if os.path.splitext(file_path)[1].lower() == '.flac':
         try:
             import librosa
-            x, fs = librosa.load(file_path, sr=None)  # sr=None preserves original sample rate
-        except ImportError:
-            raise ImportError("Please install soundfile or librosa to process FLAC files.")
+        except ImportError as exc:
+            raise ImportError("Please install librosa to process FLAC files.") from exc
+        x, fs = librosa.load(file_path, sr=None)  # sr=None preserves original sample rate
     else:
-        try:
-            from scipy.io import wavfile
-            fs, x = wavfile.read(file_path)
-        except FileNotFoundError:
-            raise FileNotFoundError(f"File {file_path} not found.")
-    
-    # Create saving folder if saving is enabled
-    if save and not os.path.exists(saving_folder):
-        os.makedirs(saving_folder)
-    
+        fs, x = wavfile.read(file_path)
+        if x.ndim > 1:
+            x = x[:, 0]
+    return fs, x
+
+
+def audio_to_spectrogram_images(x, fs, file_name="audio", saving_folder="./images", batch_size=50,
+                                start_time=0, end_time=3, save=False, wlen=2048, nfft=2048,
+                                sliding_w=WINDOW_HOP, cut_low_frequency=3, cut_high_frequency=20,
+                                target_width_px=1167, target_height_px=875):
+    """
+    Turn an already loaded signal into spectrogram images.
+
+    Each image covers ``WINDOW_DURATION`` seconds of audio; consecutive images
+    start ``sliding_w`` seconds apart. See :func:`process_audio_file` for the
+    description of the parameters.
+    """
+    import cv2
+
+    win = blackman(wlen, sym=False)
+    hop = round(0.8 * wlen)  # window hop size
+
+    if save:
+        os.makedirs(saving_folder, exist_ok=True)
+
     images = []
-    file_name = os.path.splitext(os.path.basename(file_path))[0]
     N = len(x)
     if end_time is not None:
         N = min(N, int(end_time * fs))
     low = int(start_time * fs)
     new_samples_per_slice = int(sliding_w * fs)
-    samples_per_slice = int(0.8 * fs)
+    samples_per_slice = int(WINDOW_DURATION * fs)
 
-    # Pre-calculate frequency cropping indices later using the frequency array (f) from the first slice
-    first_slice = True
+    low_idx = high_idx = None
     for _ in range(batch_size):
         if low + samples_per_slice > N:
             break
-        
+
         x_w = x[low:low + samples_per_slice]
-        win = blackman(wlen, sym=False)
         f, t, Sxx = spectrogram(x_w, fs, nperseg=wlen, noverlap=wlen-hop, nfft=nfft, window=win, scaling='density', mode='psd')
-        # Convert to dB scale as in original
+        # Convert to dB scale
         Sxx = 10 * np.log10(np.abs(Sxx) + 1e-19)
-        # Normalize Sxx to 0-255
-        Sxx = (Sxx - np.min(Sxx)) / (np.max(Sxx) - np.min(Sxx)) * 255
+        # Normalize Sxx to 0-255 (a perfectly flat slice, e.g. digital silence, maps to black)
+        value_range = np.max(Sxx) - np.min(Sxx)
+        if value_range > 0:
+            Sxx = (Sxx - np.min(Sxx)) / value_range * 255
+        else:
+            Sxx = np.zeros_like(Sxx)
 
-        if first_slice:
-            # f is in Hz; use kHz limits
-            low_freq_hz = cut_low_frequency * 1000
-            high_freq_hz = cut_high_frequency * 1000
-            low_idx = np.searchsorted(f, low_freq_hz)
-            high_idx = np.searchsorted(f, high_freq_hz)
-            first_slice = False
-        
-        # Crop frequency axis as original (note: original divides f by 1000 for plotting,
-        # but we use the indices determined from the Hz values)
-        Sxx_cropped = Sxx[low_idx:high_idx, :]
-        
-        # reverse the y axis 
-        Sxx_cropped = np.flipud(Sxx_cropped)
+        if low_idx is None:
+            # f is in Hz; the limits are given in kHz
+            low_idx = np.searchsorted(f, cut_low_frequency * 1000)
+            high_idx = np.searchsorted(f, cut_high_frequency * 1000)
 
-        # Normalize the spectrogram to 0-255 grayscale
-        Sxx_cropped_uint8 = np.clip(Sxx_cropped, 0, 255).astype(np.uint8)
-        # Convert to grayscale image (already grayscale, no need for color conversion if Sxx is 2D)
-        img_gray = Sxx_cropped_uint8
+        # Crop the frequency axis and put low frequencies at the bottom of the image
+        Sxx_cropped = np.flipud(Sxx[low_idx:high_idx, :])
+        img_gray = np.clip(Sxx_cropped, 0, 255).astype(np.uint8)
 
-        # Resize image to target dimensions; using INTER_LINEAR for smoother interpolation
-        resized =  cv2.resize(img_gray, (target_width_px, target_height_px), interpolation=cv2.INTER_NEAREST)
+        resized = cv2.resize(img_gray, (target_width_px, target_height_px), interpolation=cv2.INTER_NEAREST)
         # Convert to 3-channel image by stacking the grayscale image three times
         image = np.stack([resized, resized, resized], axis=2)
-        
+
         if save:
             image_name = os.path.join(saving_folder, f"{file_name}-{low/fs:.2f}_fast.jpg")
             cv2.imwrite(image_name, image)
-        
+
         images.append(image)
         low += new_samples_per_slice
 
     return images
 
 
+def process_audio_file(file_path, saving_folder="./images", batch_size=50, start_time=0, end_time=3, 
+                       save=False, wlen=2048, nfft=2048, sliding_w=WINDOW_HOP, cut_low_frequency=3, 
+                       cut_high_frequency=20, target_width_px=1167, target_height_px=875):
+    """
+    Process an audio file and generate spectrogram images.
 
-#%%
-# =============================================================================
-#********************* UTILISATION
-# =============================================================================
+    The spectrogram (in dB) is converted directly to a grayscale image: the
+    frequency range is cropped, values are normalized to 0-255 and the result
+    is resized with OpenCV (no matplotlib figure involved).
 
+    This reads the whole file on every call. To process a long recording in
+    several batches, load it once with :func:`load_audio` and call
+    :func:`audio_to_spectrogram_images` instead.
 
-fichier_texte = "/media/DOLPHIN_ALEXIS/temp_alexis/Label_01_Aug_2023_0845_channel_1.txt"
-fichier_csv = "/media/DOLPHIN_ALEXIS/temp_alexis/Label_01_Aug_2023_0845_channel_1.csv"
+    Parameters:
+        file_path (str): Path to the audio file (.wav or .flac).
+        saving_folder (str): Folder to save images (if save=True).
+        batch_size (int): Maximum number of spectrogram images to generate.
+        start_time (float): Start time in seconds.
+        end_time (float): End time in seconds (None for the end of the file).
+        save (bool): Whether to save the images.
+        wlen (int): Window length for spectrogram calculation.
+        nfft (int): Number of FFT points.
+        sliding_w (float): Hop between two consecutive images, in seconds.
+        cut_low_frequency (int): Lower frequency limit (in kHz) for the spectrogram.
+        cut_high_frequency (int): Upper frequency limit (in kHz) for the spectrogram.
+        target_width_px (int): Target image width in pixels.
+        target_height_px (int): Target image height in pixels.
 
-
-#********************* txt vers csv
-# # Spécifiez le chemin vers le fichier texte d'entrée et le fichier CSV de sortie
-
-# convertir_texte_en_csv(fichier_texte, fichier_csv, skip_lines=1)
-
-
-
-
-
-# #********************* csv vers intervalles 
-# nom_fichier = "/media/DOLPHIN_ALEXIS/temp_alexis/labels_channel_1.csv"
-# intervalles = lire_csv_extraits(nom_fichier)
-# intervalles_fusionnes = fusionner_intervalles(intervalles, hwindow = 5)
-# print(intervalles_fusionnes)
-
-
-# #********************* intervalles vers extraits
-# fichier_video = "/media/DOLPHIN_ALEXIS/temp_alexis/1_08/Exp_01_Aug_2023_1645_cam_all.mp4"  # Chemin vers le fichier vidéo d'entrée
-# dossier_sortie = "./extraits/channel_1"
-# extraire_extraits_video(intervalles_fusionnes, fichier_video, dossier_sortie)
-
-
-# import matlab.engine
-# eng = matlab.engine.start_matlab()
-# # Run a MATLAB script
-# eng.eval("/users/zfne/emanuell/Documents/GitHub/Dolphins/DNN_whistle_detection/save_spectrogram.m", nargout=0)
-
-# # Call a MATLAB function
-# result = eng.my_matlab_function(arg1, arg2)
-
-
+    Returns:
+        images (list): List of spectrogram images as numpy arrays (H, W, 3), uint8.
         
-        
-
+    Raises:
+        FileNotFoundError: If the audio file is not found.
+    """
+    fs, x = load_audio(file_path)
+    file_name = os.path.splitext(os.path.basename(file_path))[0]
+    return audio_to_spectrogram_images(
+        x, fs, file_name=file_name, saving_folder=saving_folder, batch_size=batch_size,
+        start_time=start_time, end_time=end_time, save=save, wlen=wlen, nfft=nfft,
+        sliding_w=sliding_w, cut_low_frequency=cut_low_frequency,
+        cut_high_frequency=cut_high_frequency, target_width_px=target_width_px,
+        target_height_px=target_height_px)

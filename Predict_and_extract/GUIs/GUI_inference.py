@@ -17,20 +17,14 @@ predict_dir = os.path.dirname(current_dir)
 # Add the 'Predict' directory to sys.path at the beginning
 sys.path.insert(0, predict_dir)
 
-from predict_and_extract_online import process_predict_extract
-
 # -----------------------
-# Default Paths based on Current Working Directory
+# Default paths (relative to the repository, never machine-specific)
 # -----------------------
+repo_root = os.path.dirname(predict_dir)
 cwd = os.getcwd()
-default_model_path = os.path.join(cwd, "models", "base_MobileNetV2.keras")
-default_recordings = "/home/emanuelli/Bureau/Watkins/68027"
-# os.path.join(cwd, "recordings") # Relative path
-default_saving_folder = "/home/emanuelli/Bureau/Watkins/68027/processed"
-# os.path.join(cwd, "processed") # Relative path
-if not os.path.exists(default_saving_folder):
-    os.makedirs(default_saving_folder, exist_ok=True)
-default_saving_folder = os.path.join(default_saving_folder, f"processed_{datetime.now().strftime('%Y%m%d_%H%M%S')}")
+default_model_path = os.path.join(repo_root, "models", "base_MobileNetV2.keras")
+default_recordings = os.path.join(cwd, "recordings")
+default_saving_folder = os.path.join(cwd, "processed", f"processed_{datetime.now().strftime('%Y%m%d_%H%M%S')}")
 
 
 class ModernUI:
@@ -1017,20 +1011,24 @@ class ProcessingGUI:
             original_stderr = sys.stderr
             sys.stdout = qw
             sys.stderr = qw
+            # Show the pipeline's log messages (per-file results, failures) in the log tab
+            import logging
+            logging.basicConfig(level=logging.INFO, stream=qw, format='%(levelname)s - %(message)s', force=True)
 
             try:
                 # Import the processing module here to avoid any import errors
                 # affecting the main GUI
-                # try:
-                #     from ..predict_and_extract_online import process_predict_extract
-                # except ImportError as e:
-                #     error_msg = (f"Could not import the processing module.\n"
-                #                 f"Error: {str(e)}\n\n"
-                #                 f"You may need to install dependencies first. "
-                #                 f"Click the 'Install Dependencies' button and try again.")
-                #     self.output_queue.put(error_msg)
-                #     self.root.after(0, messagebox.showerror, "Import Error", error_msg)
-                #     return
+                # (also lets the GUI start before the dependencies are installed)
+                try:
+                    from predict_and_extract_online import process_predict_extract
+                except ImportError as e:
+                    error_msg = (f"Could not import the processing module.\n"
+                                f"Error: {str(e)}\n\n"
+                                f"You may need to install dependencies first. "
+                                f"Click the 'Install Dependencies' button and try again.")
+                    self.output_queue.put(error_msg)
+                    self.root.after(0, messagebox.showerror, "Import Error", error_msg)
+                    return
 
                 # Set up a basic progress reporter for the processing function
                 self.output_queue.put("Starting audio processing pipeline...")
@@ -1087,6 +1085,9 @@ class ProcessingGUI:
                             f"{str(e)}\n\n"
                             f"See the Processing Log tab for more details.")
 
+                # Keep the message: `e` no longer exists when the dialog is shown later
+                error_message = str(e)
+
                 # Log the full error
                 self.output_queue.put(f"ERROR: {str(e)}")
                 self.output_queue.put(error_details)
@@ -1109,7 +1110,7 @@ class ProcessingGUI:
                     ttk.Label(main_frame, text="An error occurred during processing:",
                             font=("Segoe UI", 10, "bold")).pack(anchor="w", pady=(0, 5))
 
-                    ttk.Label(main_frame, text=str(e), foreground="red").pack(anchor="w", pady=(0, 10))
+                    ttk.Label(main_frame, text=error_message, foreground="red").pack(anchor="w", pady=(0, 10))
 
                     # Scrollable error details
                     ttk.Label(main_frame, text="Error details:").pack(anchor="w")
@@ -1159,7 +1160,7 @@ class ProcessingGUI:
 
     def install_dependencies(self):
         """Install dependencies from requirements.txt using pip"""
-        requirements_path = "requirements.txt"
+        requirements_path = os.path.join(repo_root, "requirements.txt")
         if not os.path.exists(requirements_path):
             messagebox.showerror("Error", "requirements.txt not found!")
             return

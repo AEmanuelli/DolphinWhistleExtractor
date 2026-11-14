@@ -1,40 +1,37 @@
-import warnings
-import os
-import pandas as pd
-import numpy as np
-from scipy.io import wavfile
-from tqdm import tqdm
-import cv2
+"""Whistle detection: turn recordings into spectrogram windows and classify them.
+
+For every recording found in a folder, the audio is cut into overlapping
+0.8 s windows (one every 0.4 s), each window is converted to a spectrogram
+image and classified by a Keras model. Detections are written to
+``<saving_folder>/<recording>/<recording>.wav_predictions.csv`` and, optionally,
+the positive spectrograms are saved next to it in a ``positive`` sub-folder.
+
+TensorFlow is imported lazily (when a model is loaded) so that this module can
+be imported cheaply, e.g. by the GUI before the dependencies are installed.
+"""
 import concurrent.futures
 import logging
-from pathlib import Path
-from typing import List, Tuple, Optional, Dict, Any, Union
-from dataclasses import dataclass
+import os
+import threading
 import time
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Callable, Dict, List, Optional, Tuple
 
-# TensorFlow optimizations
-import tensorflow as tf
-physical_devices = tf.config.list_physical_devices('GPU')
-if physical_devices:
-    try:
-        # Configure TensorFlow to use GPU memory growth
-        for device in physical_devices:
-            tf.config.experimental.set_memory_growth(device, True)
-        print(f"Using GPU: {physical_devices[0].name}")
-    except Exception as e:
-        print(f"GPU memory configuration error: {e}")
+import cv2
+import numpy as np
+from tqdm import tqdm
 
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
+try:  # works both as a script directory import and as a package import
+    from utils import AUDIO_EXTENSIONS, WINDOW_HOP, audio_to_spectrogram_images, load_audio, save_csv
+except ImportError:  # pragma: no cover
+    from .utils import AUDIO_EXTENSIONS, WINDOW_HOP, audio_to_spectrogram_images, load_audio, save_csv
+
 logger = logging.getLogger(__name__)
 
-# Suppress warnings
-warnings.filterwarnings("ignore", category=DeprecationWarning)
-warnings.filterwarnings("ignore", category=RuntimeWarning)
-os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'  # Suppress TensorFlow messages
+REPO_ROOT = Path(__file__).resolve().parent.parent
+DEFAULT_MODEL_PATH = str(REPO_ROOT / "models" / "base_MobileNetV2.keras")
+PREDICTION_COLUMNS = ("file_name", "initial_point", "finish_point", "confidence")
 
 
 @dataclass
@@ -46,559 +43,319 @@ class ProcessingConfig:
     cut_high_frequency: int
     image_normalize: bool
     save_positive_examples: bool
-    binary_threshold: float = 0.5  # Threshold for binary classifier
-    image_size: Tuple[int, int] = (224, 224)  # Standard image size for most models
+    binary_threshold: float = 0.5  # Threshold on the "whistle" score
+    image_size: Tuple[int, int] = (224, 224)  # (width, height) expected by the model
+    save_all_images: bool = False  # Also save every spectrogram, not only the positives
 
 
-# Create optimized model prediction function
-@tf.function(reduce_retracing=True)
-def predict_optimized(model, images):
-    """Optimized model prediction function using TensorFlow's graph execution."""
-    return model(images, training=False)
+class WhistleDetector:
+    """Thin wrapper around a Keras classifier used for inference only."""
+
+    def __init__(self, model_path: str):
+        os.environ.setdefault('TF_CPP_MIN_LOG_LEVEL', '3')  # must be set before importing TensorFlow
+        import tensorflow as tf
+
+        for device in tf.config.list_physical_devices('GPU'):
+            try:
+                tf.config.experimental.set_memory_growth(device, True)
+            except (RuntimeError, ValueError) as e:  # already initialised
+                logger.debug("GPU memory configuration skipped: %s", e)
+
+        if not os.path.exists(model_path):
+            raise FileNotFoundError(f"Model file not found: {model_path}")
+
+        logger.info("Loading model from %s", model_path)
+        self.model = tf.keras.models.load_model(model_path, compile=False)
+        self.model.trainable = False
+
+        input_shape = self.model.input_shape
+        height, width = input_shape[1], input_shape[2]
+        self.image_size = (width or 224, height or 224)  # (width, height), OpenCV convention
+
+        # Fixed signature: one traced graph whatever the batch size, safe to call from threads.
+        spec = tf.TensorSpec([None, self.image_size[1], self.image_size[0], input_shape[3] or 3], tf.float32)
+        self._infer = tf.function(lambda images: self.model(images, training=False), input_signature=[spec])
+        # Warm up (builds the graph once, before worker threads start)
+        self.predict(np.zeros((1, self.image_size[1], self.image_size[0], input_shape[3] or 3), dtype=np.float32))
+
+    def predict(self, image_batch: np.ndarray) -> np.ndarray:
+        """Return the raw model output for a float32 batch of images."""
+        return np.asarray(self._infer(image_batch))
 
 
-
-def prepare_image_batch(images: List[np.ndarray], start_time: float, 
-                                  config: ProcessingConfig) -> Tuple[np.ndarray, List[Tuple[np.ndarray, float, float]]]:
+def prepare_image_batch(images: List[np.ndarray], start_time: float,
+                        config: ProcessingConfig) -> Tuple[np.ndarray, List[Tuple[np.ndarray, float, float]]]:
     """
-    Vectorized implementation of image batch preparation for massive performance improvement.
-    
+    Resize spectrograms to the model input size and attach their time stamps.
+
     Args:
-        images: List of spectrograms
-        start_time: Start time of the first image
+        images: List of spectrogram images (consecutive windows, ``WINDOW_HOP`` apart)
+        start_time: Start time (s) of the first image
         config: Processing configuration
-        
+
     Returns:
-        Tuple of processed images ready for prediction and time information
+        (batch, time_info): float32 array of shape (n, height, width, 3) ready for
+        prediction, and a list of (original image, start time, end time).
     """
     if not images:
         return np.array([]), []
-    
-    # Pre-allocate arrays with exact shape needed
-    batch_size = len(images)
-    
-    # Stack images first for vectorized operations
-    # Use numpy's stack to avoid Python loop
-    original_images = [img.copy() for img in images]
-    
-    # Calculate all start/end times at once using vectorized operations
-    image_start_times = start_time + np.arange(batch_size) * 0.4
-    image_end_times = image_start_times + 0.4
-    
-    # Round for consistent output
-    image_start_times = np.round(image_start_times, 2)
-    image_end_times = np.round(image_end_times, 2)
-    
-    # Create time info list
-    time_info = [(original_images[i], image_start_times[i], image_end_times[i]) 
-                 for i in range(batch_size)]
-    
-    # Process all images at once when possible
-    # Convert to numpy array for vectorized operations
-    processed_images = []
-    
-    # Use OpenCV's batch processing if available
-    if hasattr(cv2, 'resize_batch'):
-        # OpenCV 4.7+ has batch processing
-        processed_images = cv2.resize_batch(images, config.image_size)
-    else:
-        # Fall back to list comprehension which is still faster than for loop
-        processed_images = np.array([cv2.resize(img, config.image_size) for img in images])
-    
-    # Add channel dimension if needed - vectorized operation
-    if processed_images.shape[-1] != 3:
-        if len(processed_images.shape) == 3:  # [batch, height, width]
-            processed_images = np.repeat(processed_images[:, :, :, np.newaxis], 3, axis=3)
-        else:  # Handle single image case
-            processed_images = np.repeat(processed_images[:, :, np.newaxis], 3, axis=2)
-    
-    # Normalize in a single vectorized operation if required
+
+    starts = np.round(start_time + np.arange(len(images)) * WINDOW_HOP, 2)
+    ends = np.round(starts + WINDOW_HOP, 2)
+    time_info = [(image, float(start), float(end)) for image, start, end in zip(images, starts, ends)]
+
+    batch = np.array([cv2.resize(img, config.image_size) for img in images])
+    if batch.ndim == 3:  # grayscale images: add the channel dimension
+        batch = np.repeat(batch[..., np.newaxis], 3, axis=3)
+
+    batch = batch.astype(np.float32)
     if config.image_normalize:
-        processed_images = processed_images / 255.0
-    
-    # Ensure correct dtype for TensorFlow
-    return processed_images.astype(np.float32), time_info
+        batch /= 255.0
+    return batch, time_info
 
 
+def positive_scores(predictions: np.ndarray, binary_threshold: float) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Interpret raw model outputs.
+
+    Supports single-output (sigmoid) models, two-class models (class 1 = whistle)
+    and multi-class models (positive when class 1 is the arg-max).
+
+    Returns:
+        (is_positive, scores): boolean mask and "whistle" score for every image.
+    """
+    predictions = np.asarray(predictions)
+    if predictions.ndim == 1:
+        predictions = predictions[:, np.newaxis]
+
+    if predictions.shape[1] == 1:
+        scores = predictions[:, 0]
+        return scores >= binary_threshold, scores
+    scores = predictions[:, 1]
+    if predictions.shape[1] == 2:
+        return scores >= binary_threshold, scores
+    return np.argmax(predictions, axis=1) == 1, scores
 
 
-    
-def save_positive_prediction(image: np.ndarray, start_time: float, end_time: float, 
+def save_positive_prediction(image: np.ndarray, start_time: float, end_time: float,
                              saving_folder: Path) -> None:
     """Save a positive prediction image to disk."""
-    saving_positive = saving_folder / "positive"
-    saving_positive.mkdir(exist_ok=True)
-    
-    image_name = saving_positive / f"{start_time}-{end_time}.jpg"
-    cv2.imwrite(str(image_name), image)
+    saving_positive = Path(saving_folder) / "positive"
+    saving_positive.mkdir(exist_ok=True, parents=True)
+    cv2.imwrite(str(saving_positive / f"{start_time}-{end_time}.jpg"), image)
 
 
-def is_positive_prediction(prediction: np.ndarray, binary_threshold: float) -> Tuple[bool, float]:
+def process_and_predict(file_path: str, config: ProcessingConfig,
+                        start_time: float, end_time: Optional[float],
+                        detector, saving_folder: Path
+                        ) -> Tuple[List[str], List[float], List[float], List[float]]:
     """
-    Determine if a prediction is positive and return confidence score.
-    Uses vectorized operations for speed.
-    """
-    # Simplified logic with fewer conditional branches
-    if prediction.size == 1:
-        # Binary classifier with single output
-        score = float(prediction.item())
-        return score >= binary_threshold, score
-    elif prediction.size == 2:
-        # Categorical classifier with two classes
-        score = float(prediction[1])
-        return score > 0.5, score
-    else:
-        # Multi-class classifier
-        positive_class_idx = 1  # Assuming class 1 is positive class
-        score = float(prediction[positive_class_idx]) 
-        return np.argmax(prediction) == positive_class_idx, score
+    Run the detector over one recording.
 
+    The audio file is loaded once, then processed batch by batch so that only
+    ``config.batch_size`` spectrograms are held in memory at a time.
 
-def process_and_predict(file_path: str, config: ProcessingConfig, 
-                                start_time: float, end_time: Optional[float], 
-                                model: tf.keras.Model, saving_folder: Path,
-                                model_type: str = 'unknown') -> Tuple[List[str], List[float], List[float], List[float]]:
-    """
-    Process an audio file with batched prediction and memory-efficient processing.
-    
-    Optimizations:
-    - Uses memory mapping for audio files
-    - Processes audio in streaming chunks
-    - Uses TensorFlow's dataset API for optimized data pipeline
-    - Implements vectorized prediction processing
-    """
-    try:
-        start_time_proc = time.time()
-        file_name = Path(file_path).name
-        
-        # Import utility functions - moved outside loop for better performance
-        from utils import process_audio_file
-        
-        # Memory-mapped file reading for large audio files
-        with open(file_path, 'rb') as fid:
-            import io
-            import mmap
-            # Memory map the file for faster access
-            mm = mmap.mmap(fid.fileno(), 0, access=mmap.ACCESS_READ)
-            fid_mm = io.BytesIO(mm)
-            
-            # Use scipy to read the memory-mapped file
-            fs, x = wavfile.read(fid_mm)
-        
-        # Calculate processing parameters more efficiently
-        N = len(x)
-        if end_time is not None:
-            N = min(N, int(end_time * fs))
-            
-        total_duration = (N / fs) - start_time
-        num_batches = int(np.ceil(total_duration / config.batch_duration))
-        
-        # Pre-allocate results with reasonable initial capacity
-        estimated_positives = max(10, num_batches * config.batch_size // 10)
-        record_names = []
-        positive_initial = []
-        positive_finish = []
-        class_1_scores = []
-        
-        # Create TensorFlow dataset for batch processing
-        def generate_batches():
-            for batch in range(num_batches):
-                batch_start = batch * config.batch_duration + start_time
-                yield batch_start
-        
-        # Create and optimize TensorFlow dataset
-        batch_dataset = tf.data.Dataset.from_generator(
-            generate_batches,
-            output_types=tf.float32,
-            output_shapes=()
-        ).prefetch(tf.data.AUTOTUNE)
-        
-        # Process batches with optimized pipeline
-        for batch_start in tqdm(batch_dataset, total=num_batches, 
-                              desc=f"Processing {file_name}", leave=False, colour='blue'):
-            batch_start = float(batch_start.numpy())
-            
-            # Process audio batch and get images
-            images = process_audio_file(
-                file_path, str(saving_folder),
-                batch_size=config.batch_size,
-                start_time=batch_start,
-                end_time=end_time,
-                cut_low_frequency=config.cut_low_frequency,
-                cut_high_frequency=config.cut_high_frequency
-            )
-            
-            if not images:
-                continue
-            
-            # Use our optimized vectorized image preparation
-            image_batch, time_batch = prepare_image_batch(images, batch_start, config)
-            
-            if len(image_batch) == 0:
-                continue
-            
-            # Use TensorFlow's efficient batch prediction
-            # Convert to TensorFlow tensor first for better GPU utilization
-            tf_batch = tf.convert_to_tensor(image_batch, dtype=tf.float32)
-            predictions = predict_optimized(model, tf_batch).numpy()
-            
-            # Vectorized prediction processing
-            # Process predictions in bulk where possible
-            if predictions.shape[1] == 1:  # Binary output
-                # Reshape to 1D array for easier comparison
-                scores = predictions.reshape(-1)
-                # Find positive indices in one operation
-                positive_indices = np.where(scores >= config.binary_threshold)[0]
-                confidences = scores[positive_indices]
-            elif predictions.shape[1] == 2:  # Two-class output
-                # Class 1 probabilities
-                scores = predictions[:, 1]
-                # Find positive indices in one operation
-                positive_indices = np.where(scores >= config.binary_threshold)[0]
-                confidences = scores[positive_indices]
-            else:  # Multi-class
-                # Find max class per prediction
-                max_classes = np.argmax(predictions, axis=1)
-                # Find where class 1 is the max
-                positive_indices = np.where(max_classes == 1)[0]
-                confidences = predictions[positive_indices, 1]
-            
-            # Bulk process the positive predictions
-            for idx in positive_indices:
-                orig_image, image_start_time, image_end_time = time_batch[idx]
-                
-                record_names.append(file_name)
-                positive_initial.append(image_start_time)
-                positive_finish.append(image_end_time)
-                class_1_scores.append(float(confidences[np.where(positive_indices == idx)[0][0]]))
-                
-                # Save positive example if requested
-                if config.save_positive_examples:
-                    save_positive_prediction(
-                        orig_image, image_start_time, image_end_time, saving_folder
-                    )
-            
-            # Explicitly clean up memory
-            del images, image_batch, predictions, tf_batch
-            
-        elapsed = time.time() - start_time_proc
-        logger.info(f"Processed {file_name} in {elapsed:.2f}s with {len(record_names)} detections")
-        return record_names, positive_initial, positive_finish, class_1_scores
-        
-    except Exception as e:
-        logger.error(f"Error processing file {file_path}: {str(e)}")
-        return [], [], [], []
+    Args:
+        detector: object exposing ``predict(batch) -> np.ndarray`` (see WhistleDetector).
 
-def process_single_file(file_name: str, recording_folder: Path, saving_folder: Path, 
-                        config: ProcessingConfig, start_time: float, end_time: Optional[float], 
-                        model: tf.keras.Model, model_type: str, pbar: tqdm) -> None:
-    """Process a single audio file for whistle detection."""
-    try:
-        # Prepare file paths
-        file_stem = Path(file_name).stem
-        file_path = recording_folder / file_name
-        file_saving_folder = saving_folder / file_stem
-        prediction_path = file_saving_folder / f"{file_stem}.wav_predictions.csv"
-        
-        # Skip processing if already done or not a WAV file
-        if not file_name.lower().endswith(".wav"):
-            pbar.update(1)
-            return
-            
-        if prediction_path.exists():
-            logger.info(f"Skipping {file_name}: Already processed")
-            pbar.update(1)
-            return
-        
-        # Create output directory - do this once per file
-        file_saving_folder.mkdir(exist_ok=True, parents=True)
-            
-        logger.info(f"Processing: {file_stem}")
-        
-        # Process audio and get predictions
-        record_names, positive_initial, positive_finish, class_1_scores = process_and_predict(
-            str(file_path), config, start_time, end_time, model, file_saving_folder, model_type
+    Returns:
+        (record_names, initial_points, finish_points, confidences) of the positive windows.
+    """
+    started = time.time()
+    file_name = Path(file_path).name
+    fs, x = load_audio(file_path)
+
+    n_samples = len(x)
+    if end_time is not None:
+        n_samples = min(n_samples, int(end_time * fs))
+    total_duration = max(0.0, n_samples / fs - start_time)
+    num_batches = int(np.ceil(total_duration / config.batch_duration))
+
+    record_names: List[str] = []
+    positive_initial: List[float] = []
+    positive_finish: List[float] = []
+    class_1_scores: List[float] = []
+
+    for batch_index in range(num_batches):
+        batch_start = batch_index * config.batch_duration + start_time
+        images = audio_to_spectrogram_images(
+            x, fs, file_name=Path(file_path).stem, saving_folder=str(saving_folder),
+            batch_size=config.batch_size, start_time=batch_start, end_time=end_time,
+            save=config.save_all_images,
+            cut_low_frequency=config.cut_low_frequency,
+            cut_high_frequency=config.cut_high_frequency,
         )
-        
-        # Import here to avoid circular imports
-        from utils import save_csv
-        
-        # Save results if any positive detections found
-        if record_names:
-            save_csv(record_names, positive_initial, positive_finish, class_1_scores, str(prediction_path))
-            logger.info(f"Saved {len(record_names)} detections for {file_name}")
-        else:
-            # Create empty file to mark as processed
-            with open(prediction_path, 'w') as f:
-                f.write("record_name,initial,finish,confidence\n")
-            logger.info(f"No detections found in {file_name}")
-            
-    except Exception as e:
-        logger.error(f"Error processing {file_name}: {str(e)}")
-    finally:
-        pbar.update(1)
+        if not images:
+            continue
+
+        image_batch, time_batch = prepare_image_batch(images, batch_start, config)
+        is_positive, scores = positive_scores(detector.predict(image_batch), config.binary_threshold)
+
+        for idx in np.flatnonzero(is_positive):
+            orig_image, image_start_time, image_end_time = time_batch[idx]
+            record_names.append(file_name)
+            positive_initial.append(image_start_time)
+            positive_finish.append(image_end_time)
+            class_1_scores.append(float(scores[idx]))
+            if config.save_positive_examples:
+                save_positive_prediction(orig_image, image_start_time, image_end_time, saving_folder)
+
+    logger.info("Processed %s in %.2fs with %d detections", file_name, time.time() - started, len(record_names))
+    return record_names, positive_initial, positive_finish, class_1_scores
 
 
-def detect_model_output_type(model: tf.keras.Model) -> str:
-    """Detect the output type of the model using a unified approach."""
-    try:
-        # Use a single dummy input for all detection approaches
-        dummy_input = np.zeros((1,) + model.input_shape[1:], dtype=np.float32)
-        
-        # Run prediction once
-        output = model.predict(dummy_input, verbose=0)
-        
-        if output.ndim == 1 or (output.ndim == 2 and output.shape[1] == 1):
-            return 'binary'
-        elif output.ndim == 2 and output.shape[1] > 1:
-            return 'categorical'
-        
-        # As a fallback, check the last layer
-        last_layer = model.layers[-1]
-        if hasattr(last_layer, 'activation'):
-            activation_name = last_layer.activation.__name__
-            if activation_name == 'sigmoid':
-                return 'binary'
-            elif activation_name == 'softmax':
-                return 'categorical'
-        
-        return 'unknown'
-        
-    except Exception as e:
-        logger.warning(f"Could not detect model type: {str(e)}")
-        return 'unknown'
+def prediction_csv_path(saving_folder: Path, file_name: str) -> Path:
+    """Path of the predictions CSV written for a given recording."""
+    stem = Path(file_name).stem
+    return Path(saving_folder) / stem / f"{stem}.wav_predictions.csv"
 
 
-def get_optimal_batch_size(file_count: int) -> int:
-    """Determine optimal batch size based on available system resources."""
-    import psutil
-    
-    # Get available memory in GB
-    available_memory = psutil.virtual_memory().available / (1024**3)
-    
-    # Get CPU and GPU info
-    cpu_count = os.cpu_count() or 8
-    gpu_available = len(tf.config.list_physical_devices('GPU')) > 0
-    
-    # Base batch size on available memory and compute resources
-    if gpu_available:
-        # GPU-based batch sizing
-        if available_memory > 16:
-            return 64
-        elif available_memory > 8:
-            return 32
-        else:
-            return 16
-    else:
-        # CPU-based batch sizing
-        if available_memory > 32:
-            return 128
-        elif available_memory > 16:
-            return 64
-        elif available_memory > 8:
-            return 32
-        else:
-            return 16
+def process_single_file(file_name: str, recording_folder: Path, saving_folder: Path,
+                        config: ProcessingConfig, start_time: float, end_time: Optional[float],
+                        detector) -> Optional[int]:
+    """
+    Detect whistles in one recording and write its predictions CSV.
+
+    Returns:
+        Number of detections, or None if the file was skipped (already processed).
+
+    The CSV is only written when processing succeeded, so a file that failed is
+    retried on the next run instead of being recorded as "no whistle".
+    """
+    prediction_path = prediction_csv_path(saving_folder, file_name)
+    if prediction_path.exists():
+        logger.info("Skipping %s: already processed", file_name)
+        return None
+
+    file_saving_folder = prediction_path.parent
+    file_saving_folder.mkdir(exist_ok=True, parents=True)
+
+    record_names, positive_initial, positive_finish, class_1_scores = process_and_predict(
+        str(Path(recording_folder) / file_name), config, start_time, end_time, detector, file_saving_folder
+    )
+
+    # Written even when empty (header only): marks the recording as processed.
+    save_csv(record_names, positive_initial, positive_finish, class_1_scores, str(prediction_path))
+    return len(record_names)
 
 
 def get_optimal_worker_count(file_count: int) -> int:
-    """Determine optimal worker count based on system resources and workload."""
-    import psutil
-    
-    # Get system information
-    cpu_count = os.cpu_count() or 8
-    available_memory = psutil.virtual_memory().available / (1024**3)
-    
-    # Calculate based on workload and resources
-    if file_count < 5:
-        # For small workloads, use fewer workers
-        return max(1, min(file_count, cpu_count // 2))
-    elif available_memory < 4:
-        # Limited memory systems
-        return max(1, cpu_count // 4)
-    elif available_memory < 8:
-        # Medium memory systems
-        return max(1, cpu_count // 2)
-    else:
-        # High memory systems
-        return max(1, int(cpu_count * 0.75))
+    """Number of worker threads: one per file, capped by CPU count (at most 8)."""
+    return max(1, min(file_count, os.cpu_count() or 1, 8))
 
-def process_predict_extract(recording_folder_path: str, saving_folder: str, 
-                            cut_low_freq: int = 3, cut_high_freq: int = 20, 
-                            image_normalize: bool = False, start_time: float = 0, 
+
+def list_files_to_process(recording_folder: Path, saving_folder: Path,
+                          specific_files: Optional[List[str]] = None) -> List[str]:
+    """Audio files of ``recording_folder`` that do not have a predictions CSV yet."""
+    if specific_files:
+        candidates = [f.strip() for f in specific_files if f.strip()]
+        missing = [f for f in candidates if not (recording_folder / f).is_file()]
+        for f in missing:
+            logger.warning("Listed file not found in %s: %s", recording_folder, f)
+        candidates = [f for f in candidates if f not in missing]
+    else:
+        candidates = [f for f in os.listdir(recording_folder) if (recording_folder / f).is_file()]
+
+    return sorted(
+        f for f in candidates
+        if f.lower().endswith(AUDIO_EXTENSIONS) and not prediction_csv_path(saving_folder, f).exists()
+    )
+
+
+def process_predict_extract(recording_folder_path: str, saving_folder: str,
+                            cut_low_freq: int = 3, cut_high_freq: int = 20,
+                            image_normalize: bool = False, start_time: float = 0,
                             end_time: Optional[float] = 1800, batch_size: int = 50,
-                            save: bool = False, save_positives: bool = True, 
-                            model_path: str = "models/model_vgg.h5", 
+                            save: bool = False, save_positives: bool = True,
+                            model_path: str = DEFAULT_MODEL_PATH,
                             binary_threshold: float = 0.5,
-                            max_workers: Optional[int] = None, 
-                            specific_files: Optional[List[str]] = None) -> None:
+                            max_workers: Optional[int] = None,
+                            specific_files: Optional[List[str]] = None,
+                            progress_callback: Optional[Callable[[float, str], None]] = None,
+                            ) -> Dict[str, Optional[int]]:
     """
-    Process and extract predictions from multiple audio files with optimized performance.
+    Detect whistles in every recording (.wav / .flac) of a folder.
+
+    Args:
+        recording_folder_path: Folder containing the recordings.
+        saving_folder: Folder where one sub-folder per recording is created.
+        cut_low_freq / cut_high_freq: Frequency band (kHz) shown in the spectrograms.
+        image_normalize: Divide images by 255 before prediction (depends on how the model was trained).
+        start_time / end_time: Portion of each recording to analyse, in seconds (end_time=None: whole file).
+        batch_size: Number of spectrograms per inference batch.
+        save: Save every spectrogram image.
+        save_positives: Save the spectrogram images classified as whistles.
+        model_path: Keras model file.
+        binary_threshold: Minimum score for a window to count as a whistle.
+        max_workers: Number of recordings processed in parallel (None or <= 0: automatic).
+        specific_files: Only process these file names (relative to the recordings folder).
+        progress_callback: Called as ``progress_callback(percent, status_text)`` after each file.
+
+    Returns:
+        Dict mapping each processed file name to its number of detections
+        (None when the file failed; it will be retried on the next run).
+
+    Raises:
+        FileNotFoundError: If the recordings folder or the model does not exist.
     """
-    # Convert paths to Path objects
     recording_folder = Path(recording_folder_path)
     saving_folder = Path(saving_folder)
+    if not recording_folder.is_dir():
+        raise FileNotFoundError(f"Recordings folder not found: {recording_folder}")
     saving_folder.mkdir(exist_ok=True, parents=True)
-    
-    # Start timer
-    start_time_total = time.time()
-    
-    # Determine files to process
-    if specific_files:
-        files_to_process = sorted([f for f in specific_files if (recording_folder / f).exists() and f.lower().endswith('.wav')])
-    else:
-        files_to_process = sorted(
-            [f for f in os.listdir(recording_folder_path) 
-             if f.lower().endswith('.wav') and not (saving_folder / f.split('.')[0] / f"{f.split('.')[0]}.wav_predictions.csv").exists()]
-        )
-    
-    # Skip processing if no files found
+
+    started = time.time()
+    files_to_process = list_files_to_process(recording_folder, saving_folder, specific_files)
     if not files_to_process:
         logger.info("No files to process.")
-        return
-        
-    logger.info(f"Found {len(files_to_process)} files to process")
-    
-    # Optimize batch size based on available resources if not specified
-    if batch_size <= 0:
-        batch_size = get_optimal_batch_size(len(files_to_process))
-        logger.info(f"Automatically selected batch size: {batch_size}")
-    
-    # Optimize worker count based on system resources if not specified
+        return {}
+    logger.info("Found %d files to process", len(files_to_process))
+
+    if batch_size is None or batch_size <= 0:
+        batch_size = 50
     if max_workers is None or max_workers <= 0:
         max_workers = get_optimal_worker_count(len(files_to_process))
-        logger.info(f"Automatically selected worker count: {max_workers}")
-    
-    # Load and optimize model - do this ONCE before processing
-    try:
-        logger.info(f"Loading model from {model_path}")
-        
-        # Load model with optimizations
-        model = tf.keras.models.load_model(model_path, compile=False)
-        
-        # Set model to inference mode
-        model.trainable = False
-        
-        # Detect model type
-        model_type = detect_model_output_type(model)
-        logger.info(f"Detected model type: {model_type}")
-        
-        # Warm up the model with a dummy prediction
-        dummy_input = np.zeros((1,) + model.input_shape[1:], dtype=np.float32)
-        _ = model.predict(dummy_input, verbose=0)
-        
-    except Exception as e:
-        logger.error(f"Failed to load model: {str(e)}")
-        return
-    
-    # Create processing configuration
+        logger.info("Automatically selected worker count: %d", max_workers)
+
+    detector = WhistleDetector(model_path)
+
     config = ProcessingConfig(
-        batch_duration=batch_size * 0.4,
+        batch_duration=batch_size * WINDOW_HOP,
         batch_size=batch_size,
         cut_low_frequency=cut_low_freq,
         cut_high_frequency=cut_high_freq,
         image_normalize=image_normalize,
         save_positive_examples=save_positives,
         binary_threshold=binary_threshold,
-        image_size=(224, 224)  # Standard size for most models
+        image_size=detector.image_size,
+        save_all_images=save,
     )
-    
-    # Process files with thread pool
-    with tqdm(total=len(files_to_process), desc="Processing files", position=0, leave=True) as pbar:
-        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
-            futures = []
-            
-            for file_name in files_to_process:
-                future = executor.submit(
-                    process_single_file, 
-                    file_name, 
-                    recording_folder, 
-                    saving_folder,
-                    config,
-                    start_time,
-                    end_time,
-                    model,
-                    model_type,
-                    pbar
-                )
-                futures.append(future)
-            
-            # Wait for all tasks to complete (or handle exceptions)
-            for future in concurrent.futures.as_completed(futures):
-                try:
-                    future.result()  # Get result or exception
-                except Exception as e:
-                    logger.error(f"Thread error: {str(e)}")
-    
-    elapsed = time.time() - start_time_total
-    logger.info(f"Completed processing {len(files_to_process)} files in {elapsed:.2f}s")
 
-import cProfile
-import pstats
-import io
-# from predict_and_extract_online import process_predict_extract
+    results: Dict[str, Optional[int]] = {}
+    lock = threading.Lock()
 
-# Define test parameters - update these paths
+    with tqdm(total=len(files_to_process), desc="Processing files") as pbar, \
+            concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = {
+            executor.submit(process_single_file, file_name, recording_folder, saving_folder,
+                            config, start_time, end_time, detector): file_name
+            for file_name in files_to_process
+        }
+        for future in concurrent.futures.as_completed(futures):
+            file_name = futures[future]
+            try:
+                results[file_name] = future.result()
+                status = f"{file_name}: {results[file_name] or 0} detections"
+            except Exception as e:  # keep going with the other recordings
+                results[file_name] = None
+                status = f"{file_name}: failed ({e})"
+                logger.error("Error processing %s: %s", file_name, e)
+            with lock:
+                pbar.update(1)
+                if progress_callback is not None:
+                    progress_callback(100.0 * pbar.n / len(files_to_process), status)
 
-# # Profile function
-# def profile_worker_function():
-#     recording_folder_path = "/home/emanuelli/Téléchargements"
-#     saving_folder = "/home/emanuelli/Téléchargements/profilejihugyf="
-#     model_path = "models/base_MobileNetV2.keras"
-
-#     # Load model once outside profiling
-#     model = tf.keras.models.load_model(model_path, compile=False)
-#     model.trainable = False
-#     model_type = detect_model_output_type(model)
-    
-#     # Create configuration
-#     config = ProcessingConfig(
-#         batch_duration=50 * 0.4,
-#         batch_size=50,
-#         cut_low_frequency=3,
-#         cut_high_frequency=20,
-#         image_normalize=False,
-#         save_positive_examples=True,
-#         binary_threshold=0.5,
-#         image_size=(224, 224)
-#     )
-    
-#     # Get a single file
-#     recording_folder = Path(recording_folder_path)
-#     saving_folder = Path(saving_folder)
-#     saving_folder.mkdir(exist_ok=True, parents=True)
-    
-#     # Find first WAV file
-#     for i, file_name in enumerate(os.listdir(recording_folder_path)):
-#         if file_name.lower().endswith('.wav'):
-#             if i == 1:
-#                 # Create dummy progress bar
-#                 dummy_pbar = tqdm(total=1, disable=False)
-                
-#                 # Profile just the worker function
-#                 process_single_file(
-#                     file_name=file_name,
-#                     recording_folder=recording_folder,
-#                     saving_folder=saving_folder,
-#                     config=config,
-#                     start_time=0,
-#                     end_time=None,  # Profile first 5 minutes only
-#                     model=model,
-#                     model_type=model_type,
-#                     pbar=dummy_pbar
-#                 )
-#                 break
-
-# # Run profiler
-# profiler = cProfile.Profile()
-# profiler.enable()
-# profile_worker_function()
-# profiler.disable()
-
-# # Save and print results
-# profiler.dump_stats('processing_profile.prof')
-# stats = pstats.Stats(profiler).sort_stats('cumulative')
-# stats.print_stats(20)  # Top 20 time-consuming functions
-
-# print("\nProfile data saved to 'processing_profile.prof'")
-# print("To visualize: pip install snakeviz && snakeviz processing_profile.prof")
+    failed = [name for name, count in results.items() if count is None]
+    logger.info("Completed processing %d files in %.2fs (%d failed)",
+                len(files_to_process), time.time() - started, len(failed))
+    return results
