@@ -173,6 +173,7 @@ train / validation splits (2021-2024). Threshold 0.5; the 95% interval of the ac
 |---|---|---|---|---|---|
 | `base_MobileNetV2` (default) | **97.9%** (97.5-98.2) | 98.0% | 97.7% | 98.0% | 0.993 |
 | VGG16 of the OpenWhistle paper (`model_vgg_final_best.pt`) | 97.2% (96.9-97.5) | 96.5% | 98.0% | 96.5% | 0.988 |
+| `model_finetuned_vgg.h5` (not in the repository, with `--image_norm`) | 96.4% (95.9-96.9) | 94.5% | 98.7% | 94.2% | 0.992 |
 | `base_EfficientNetB0` | 95.0% (94.5-95.4) | 97.5% | 92.2% | 97.7% | 0.978 |
 | `base_mobilenetv2_best_val_loss` | 94.5% (94.0-94.9) | 95.8% | 93.0% | 95.9% | 0.972 |
 
@@ -183,6 +184,7 @@ pip install pyarrow            # in addition to requirements.txt
 python Train_model/evaluate_models.py                                  # the Keras models of models/
 python Train_model/evaluate_models.py --models model_vgg_final_best.pt # the paper's VGG16 (needs torch, torchvision)
 python Train_model/evaluate_models.py --source pipeline                # spectrograms recomputed from the audio
+python Train_model/evaluate_models.py --models models/model_finetuned_vgg.h5 --scale div255  # the older Keras VGG
 ```
 
 Notes:
@@ -195,6 +197,13 @@ Notes:
 - **Do not use `--image_norm` with the bundled Keras models.** They expect raw 0-255 images; with images divided by
   255 the three of them predict "noise" for every window (recall 0%, accuracy 50%). The option is ignored for the
   paper's VGG16, which normalises its inputs itself.
+- `model_finetuned_vgg.h5` (Keras VGG16 with a 50/20 head, see `models/README.txt`) is the opposite: it needs
+  `--image_norm`. On raw 0-255 images it predicts "whistle" for almost every window (accuracy 50.0%, ROC AUC 0.50).
+  At threshold 0.5 it leans towards "whistle" (483 false positives for 112 misses); its ROC AUC is on par with
+  `base_MobileNetV2`, and a higher threshold (0.9-0.95) gives about 97.6% on this test split. That threshold was
+  read off the test split itself, so the figure is optimistic; pick a threshold on the validation split instead.
+  Fed with the `legacy` STFT and 3-20 kHz band (on the benchmark's 0.4 s windows) it drops to 87.8%: use the
+  default `paper` spectrograms.
 - The benchmark tells nothing about which data the bundled Keras models were trained on; if a model was trained on
   recordings of 2019-2020, its figures above are optimistic. The paper's VGG16 was trained on 2021-2024 only.
 - With the settings used by this repository before version 2.0 (`--spectrogram legacy`: 0.8 s windows every 0.4 s,

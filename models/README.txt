@@ -22,11 +22,19 @@ test split) is not stored here. Download its PyTorch checkpoint and pass it to
 
 Older Keras VGG models (not stored in the repository, *.h5 files are git-ignored).
 They follow Korkmaz et al. 2023 (doi:10.3389/frai.2023.1099022), whose images are
-0.8 s windows in the 3-20 kHz band: run them with --spectrogram legacy.
+0.8 s windows in the 3-20 kHz band.
   model_vgg.h5            not fine-tuned
-  model_finetuned_vgg.h5  fine-tuned on our data (98.5% accuracy)
+  model_finetuned_vgg.h5  fine-tuned on our data (98.5% accuracy reported at training time,
+                          96.4% on the OpenWhistle-CNN test split with --image_norm)
 Training data: https://www.kaggle.com/datasets/alexisemanuelli/whistles-baby-hit-me-up/versions/1
 
+On the OpenWhistle-CNN test split, model_finetuned_vgg.h5 does better with the
+default "paper" spectrograms (96.4%) than with the legacy STFT and band (87.8%),
+so keep the default rather than --spectrogram legacy. At threshold 0.5 it gives
+more false positives than misses; see the "Model evaluation" section of the main
+README.
+
 /!\ Image normalisation: the fine-tuned VGG model takes normalised images (/255,
-option --image_norm), whereas the initial VGG model does not. Use the setting the
-model was trained with.
+option --image_norm); on raw 0-255 images it predicts "whistle" for almost every
+window. The initial VGG model does not take normalised images. Use the setting
+the model was trained with.
