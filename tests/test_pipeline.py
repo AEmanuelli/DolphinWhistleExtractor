@@ -59,7 +59,7 @@ def test_pipeline_writes_predictions(wav_file, tmp_path, fake_model):
     results = run(wav_file, out, batch_size=4, progress_callback=lambda pct, msg: progress.append(pct))
 
     stem = wav_file.stem
-    # 9 windows in batches of 4 (4 + 4 + 1); even indices of each batch are positive
+    # 4 s of audio: ten 0.4 s windows in batches of 4 (4 + 4 + 2); even indices of each batch are positive
     assert results == {wav_file.name: 5}
     df = pd.read_csv(out / stem / f"{stem}.wav_predictions.csv")
     assert list(df.columns) == list(pipeline.PREDICTION_COLUMNS)
@@ -78,12 +78,63 @@ def test_pipeline_skips_processed_files(wav_file, tmp_path, fake_model):
 
 def test_pipeline_respects_time_range_and_threshold(wav_file, tmp_path, fake_model):
     results = run(wav_file, tmp_path / "a", start_time=1.0, end_time=2.0, save_positives=False)
-    assert results == {wav_file.name: 1}  # a single 0.8 s window fits in [1, 2]
+    assert results == {wav_file.name: 1}  # two 0.4 s windows fit in [1, 2]; the fake model flags the first
     assert not (tmp_path / "a" / wav_file.stem / "positive").exists()
 
     assert run(wav_file, tmp_path / "b", binary_threshold=0.95) == {wav_file.name: 0}
     df = pd.read_csv(tmp_path / "b" / wav_file.stem / f"{wav_file.stem}.wav_predictions.csv")
     assert df.empty and list(df.columns) == list(pipeline.PREDICTION_COLUMNS)
+
+
+def test_detector_sees_paper_spectrograms(wav_file, tmp_path, monkeypatch):
+    import utils
+
+    detector = FakeDetector()
+    monkeypatch.setattr(pipeline, "WhistleDetector", lambda model_path: detector)
+    run(wav_file, tmp_path / "out", batch_size=50, save=True)
+
+    (batch,) = detector.batches
+    assert batch.shape == (10, 24, 32, 3) and batch.dtype == np.float32 and batch.max() > 1  # raw 0-255
+    fs, x = utils.prepare_audio(*utils.load_audio(str(wav_file))[::-1])
+    expected = utils.spectrogram_image(x[38400:76800], fs, size=FakeDetector.image_size)
+    assert np.array_equal(batch[1], expected.astype(np.float32))  # second window: 0.4-0.8 s
+    assert len(list((tmp_path / "out" / wav_file.stem / "all").glob("*.jpg"))) == 10
+
+
+def test_legacy_preset_uses_overlapping_windows(wav_file, tmp_path, monkeypatch):
+    detector = FakeDetector()
+    monkeypatch.setattr(pipeline, "WhistleDetector", lambda model_path: detector)
+    results = run(wav_file, tmp_path / "out", batch_size=50, spectrogram="legacy", cut_high_freq=25)
+    assert detector.batches[0].shape == (9, 24, 32, 3)  # 0.8 s windows every 0.4 s over 4 s
+    assert results == {wav_file.name: 5}
+
+    with pytest.raises(ValueError):
+        run(wav_file, tmp_path / "other", spectrogram="unknown")
+
+
+def test_torch_checkpoint_detector(tmp_path, wav_file):
+    """The paper's VGG16 checkpoint format (.pt) is loaded and run end to end."""
+    torch = pytest.importorskip("torch")
+    pytest.importorskip("torchvision")
+    from torch import nn
+    from torchvision import models
+
+    backbone = models.vgg16(weights=None)
+    state = {f"features.{k}": v for k, v in backbone.features.state_dict().items()}
+    for name, layer in (("fc1", nn.Linear(25088, 50)), ("fc2", nn.Linear(50, 20)), ("out", nn.Linear(20, 2))):
+        state.update({f"{name}.{k}": v for k, v in layer.state_dict().items()})
+    checkpoint = tmp_path / "model.pt"
+    torch.save({"model_state_dict": state, "img_size": 224,
+                "normalization": {"mean": [0.485, 0.456, 0.406], "std": [0.229, 0.224, 0.225]}}, checkpoint)
+
+    detector = pipeline.load_detector(str(checkpoint))
+    assert isinstance(detector, pipeline.TorchWhistleDetector) and detector.image_size == (224, 224)
+    output = detector.predict(np.random.default_rng(0).uniform(0, 255, (2, 224, 224, 3)).astype(np.float32))
+    assert output.shape == (2, 2) and np.allclose(output.sum(axis=1), 1, atol=1e-5)
+
+    results = pipeline.process_predict_extract(str(wav_file.parent), str(tmp_path / "out"), end_time=1.0,
+                                               model_path=str(checkpoint), max_workers=1, image_normalize=True)
+    assert list(results) == [wav_file.name] and results[wav_file.name] is not None
 
 
 def test_failed_file_is_not_marked_as_processed(wav_file, tmp_path, fake_model):

@@ -1,20 +1,23 @@
 """Whistle detection: turn recordings into spectrogram windows and classify them.
 
-For every recording found in a folder, the audio is cut into overlapping
-0.8 s windows (one every 0.4 s), each window is converted to a spectrogram
-image and classified by a Keras model. Detections are written to
+By default the recordings are processed as in the OpenWhistle paper
+(arXiv:2609.34839): the audio is cut into non-overlapping 0.4 s windows, each
+window is converted to a 2-22 kHz log-power spectrogram image and classified
+as whistle / noise. Detections are written to
 ``<saving_folder>/<recording>/<recording>.wav_predictions.csv`` and, optionally,
 the positive spectrograms are saved next to it in a ``positive`` sub-folder.
 
-TensorFlow is imported lazily (when a model is loaded) so that this module can
-be imported cheaply, e.g. by the GUI before the dependencies are installed.
+Two kinds of models are supported: Keras models (``.keras`` / ``.h5``) and the
+PyTorch VGG16 checkpoint published with the paper (``.pt``). TensorFlow and
+PyTorch are imported lazily (when a model is loaded) so that this module can be
+imported cheaply, e.g. by the GUI before the dependencies are installed.
 """
 import concurrent.futures
 import logging
 import os
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Tuple
 
@@ -23,15 +26,20 @@ import numpy as np
 from tqdm import tqdm
 
 try:  # works both as a script directory import and as a package import
-    from utils import AUDIO_EXTENSIONS, WINDOW_HOP, audio_to_spectrogram_images, load_audio, save_csv
+    from utils import (AUDIO_EXTENSIONS, PAPER_SPECTROGRAM, SPECTROGRAM_PRESETS, SpectrogramSettings,
+                       load_audio, prepare_audio, save_csv, spectrogram_image, window_starts)
 except ImportError:  # pragma: no cover
-    from .utils import AUDIO_EXTENSIONS, WINDOW_HOP, audio_to_spectrogram_images, load_audio, save_csv
+    from .utils import (AUDIO_EXTENSIONS, PAPER_SPECTROGRAM, SPECTROGRAM_PRESETS, SpectrogramSettings,
+                        load_audio, prepare_audio, save_csv, spectrogram_image, window_starts)
 
 logger = logging.getLogger(__name__)
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_MODEL_PATH = str(REPO_ROOT / "models" / "base_MobileNetV2.keras")
 PREDICTION_COLUMNS = ("file_name", "initial_point", "finish_point", "confidence")
+TORCH_EXTENSIONS = (".pt", ".pth")
+IMAGENET_MEAN = (0.485, 0.456, 0.406)
+IMAGENET_STD = (0.229, 0.224, 0.225)
 
 
 @dataclass
@@ -46,10 +54,14 @@ class ProcessingConfig:
     binary_threshold: float = 0.5  # Threshold on the "whistle" score
     image_size: Tuple[int, int] = (224, 224)  # (width, height) expected by the model
     save_all_images: bool = False  # Also save every spectrogram, not only the positives
+    spectrogram: SpectrogramSettings = PAPER_SPECTROGRAM  # windowing and spectrogram parameters
 
 
 class WhistleDetector:
     """Thin wrapper around a Keras classifier used for inference only."""
+
+    # Keras models take the images as prepared by the pipeline (0-255, or 0-1 with image_normalize)
+    handles_normalization = False
 
     def __init__(self, model_path: str):
         os.environ.setdefault('TF_CPP_MIN_LOG_LEVEL', '3')  # must be set before importing TensorFlow
@@ -83,13 +95,89 @@ class WhistleDetector:
         return np.asarray(self._infer(image_batch))
 
 
+class TorchWhistleDetector:
+    """
+    The VGG16 whistle detector of the OpenWhistle paper (PyTorch checkpoint).
+
+    Architecture (cnn/utils/model.py of the official code): VGG16 convolutional
+    backbone, then fully connected layers of 50 and 20 units and 2 outputs
+    (noise, whistle). Images are scaled to 0-1 and normalised with the
+    ImageNet statistics. The published weights are at
+    https://huggingface.co/dolphinteam/OpenWhistle-CNN-VGG16 (model_vgg_final_best.pt).
+    """
+
+    handles_normalization = True  # expects raw 0-255 images and normalises them itself
+
+    def __init__(self, model_path: str):
+        try:
+            import torch
+            from torch import nn
+            from torchvision import models
+        except ImportError as exc:
+            raise ImportError("PyTorch checkpoints need torch and torchvision: "
+                              "pip install torch torchvision") from exc
+
+        if not os.path.exists(model_path):
+            raise FileNotFoundError(f"Model file not found: {model_path}")
+
+        class VGG16WhistleClassifier(nn.Module):
+            def __init__(self):
+                super().__init__()
+                backbone = models.vgg16(weights=None)
+                self.features = backbone.features
+                self.avgpool = backbone.avgpool
+                self.flatten = nn.Flatten()
+                self.fc1 = nn.Linear(backbone.classifier[0].in_features, 50)
+                self.fc2 = nn.Linear(50, 20)
+                self.out = nn.Linear(20, 2)
+
+            def forward(self, x):
+                x = self.flatten(self.avgpool(self.features(x)))
+                return self.out(torch.relu(self.fc2(torch.relu(self.fc1(x)))))
+
+        logger.info("Loading PyTorch checkpoint from %s", model_path)
+        # weights_only: the file is only read as tensors and plain values, no code is executed
+        checkpoint = torch.load(model_path, map_location="cpu", weights_only=True)
+        state_dict = checkpoint.get("model_state_dict", checkpoint) if isinstance(checkpoint, dict) else checkpoint
+        metadata = checkpoint if isinstance(checkpoint, dict) else {}
+
+        self._torch = torch
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.model = VGG16WhistleClassifier()
+        self.model.load_state_dict(state_dict)
+        self.model.to(self.device).eval()
+
+        size = int(metadata.get("img_size", 224) or 224)
+        self.image_size = (size, size)
+        normalization = metadata.get("normalization") or {}
+        mean = normalization.get("mean") or IMAGENET_MEAN
+        std = normalization.get("std") or IMAGENET_STD
+        self._mean = torch.tensor(mean, dtype=torch.float32, device=self.device).view(1, 3, 1, 1)
+        self._std = torch.tensor(std, dtype=torch.float32, device=self.device).view(1, 3, 1, 1)
+
+    def predict(self, image_batch: np.ndarray) -> np.ndarray:
+        """Return [P(noise), P(whistle)] for a batch of 0-255 images (n, height, width, 3)."""
+        torch = self._torch
+        images = torch.from_numpy(np.ascontiguousarray(image_batch, dtype=np.float32) / 255.0)
+        images = (images.permute(0, 3, 1, 2).to(self.device) - self._mean) / self._std
+        with torch.inference_mode():
+            return torch.softmax(self.model(images), dim=1).cpu().numpy()
+
+
+def load_detector(model_path: str):
+    """Load a detector from a model file: PyTorch checkpoint (.pt / .pth) or Keras model."""
+    if str(model_path).lower().endswith(TORCH_EXTENSIONS):
+        return TorchWhistleDetector(model_path)
+    return WhistleDetector(model_path)
+
+
 def prepare_image_batch(images: List[np.ndarray], start_time: float,
                         config: ProcessingConfig) -> Tuple[np.ndarray, List[Tuple[np.ndarray, float, float]]]:
     """
     Resize spectrograms to the model input size and attach their time stamps.
 
     Args:
-        images: List of spectrogram images (consecutive windows, ``WINDOW_HOP`` apart)
+        images: List of spectrogram images (consecutive windows)
         start_time: Start time (s) of the first image
         config: Processing configuration
 
@@ -100,8 +188,9 @@ def prepare_image_batch(images: List[np.ndarray], start_time: float,
     if not images:
         return np.array([]), []
 
-    starts = np.round(start_time + np.arange(len(images)) * WINDOW_HOP, 2)
-    ends = np.round(starts + WINDOW_HOP, 2)
+    hop = config.spectrogram.window_hop
+    starts = np.round(start_time + np.arange(len(images)) * hop, 2)
+    ends = np.round(starts + hop, 2)
     time_info = [(image, float(start), float(end)) for image, start, end in zip(images, starts, ends)]
 
     batch = np.array([cv2.resize(img, config.image_size) for img in images])
@@ -152,8 +241,9 @@ def process_and_predict(file_path: str, config: ProcessingConfig,
     """
     Run the detector over one recording.
 
-    The audio file is loaded once, then processed batch by batch so that only
-    ``config.batch_size`` spectrograms are held in memory at a time.
+    The audio file is loaded once (and resampled if needed), then processed
+    batch by batch so that only ``config.batch_size`` spectrograms are held in
+    memory at a time.
 
     Args:
         detector: object exposing ``predict(batch) -> np.ndarray`` (see WhistleDetector).
@@ -163,30 +253,27 @@ def process_and_predict(file_path: str, config: ProcessingConfig,
     """
     started = time.time()
     file_name = Path(file_path).name
+    settings = config.spectrogram
     fs, x = load_audio(file_path)
-
-    n_samples = len(x)
-    if end_time is not None:
-        n_samples = min(n_samples, int(end_time * fs))
-    total_duration = max(0.0, n_samples / fs - start_time)
-    num_batches = int(np.ceil(total_duration / config.batch_duration))
+    fs, x = prepare_audio(x, fs, settings)
+    starts, samples_per_window = window_starts(len(x), fs, settings, start_time, end_time)
 
     record_names: List[str] = []
     positive_initial: List[float] = []
     positive_finish: List[float] = []
     class_1_scores: List[float] = []
 
-    for batch_index in range(num_batches):
-        batch_start = batch_index * config.batch_duration + start_time
-        images = audio_to_spectrogram_images(
-            x, fs, file_name=Path(file_path).stem, saving_folder=str(saving_folder),
-            batch_size=config.batch_size, start_time=batch_start, end_time=end_time,
-            save=config.save_all_images,
-            cut_low_frequency=config.cut_low_frequency,
-            cut_high_frequency=config.cut_high_frequency,
-        )
-        if not images:
-            continue
+    for first in range(0, len(starts), config.batch_size):
+        batch_starts = starts[first:first + config.batch_size]
+        images = [spectrogram_image(x[low:low + samples_per_window], fs, settings, config.image_size)
+                  for low in batch_starts]
+        batch_start = start_time + first * settings.window_hop
+
+        if config.save_all_images:
+            all_folder = Path(saving_folder) / "all"
+            all_folder.mkdir(exist_ok=True, parents=True)
+            for low, image in zip(batch_starts, images):
+                cv2.imwrite(str(all_folder / f"{Path(file_path).stem}-{low / fs:.2f}.jpg"), image)
 
         image_batch, time_batch = prepare_image_batch(images, batch_start, config)
         is_positive, scores = positive_scores(detector.predict(image_batch), config.binary_threshold)
@@ -263,7 +350,7 @@ def list_files_to_process(recording_folder: Path, saving_folder: Path,
 
 
 def process_predict_extract(recording_folder_path: str, saving_folder: str,
-                            cut_low_freq: int = 3, cut_high_freq: int = 20,
+                            cut_low_freq: Optional[float] = None, cut_high_freq: Optional[float] = None,
                             image_normalize: bool = False, start_time: float = 0,
                             end_time: Optional[float] = 1800, batch_size: int = 50,
                             save: bool = False, save_positives: bool = True,
@@ -272,6 +359,7 @@ def process_predict_extract(recording_folder_path: str, saving_folder: str,
                             max_workers: Optional[int] = None,
                             specific_files: Optional[List[str]] = None,
                             progress_callback: Optional[Callable[[float, str], None]] = None,
+                            spectrogram: str = "paper",
                             ) -> Dict[str, Optional[int]]:
     """
     Detect whistles in every recording (.wav / .flac) of a folder.
@@ -279,17 +367,21 @@ def process_predict_extract(recording_folder_path: str, saving_folder: str,
     Args:
         recording_folder_path: Folder containing the recordings.
         saving_folder: Folder where one sub-folder per recording is created.
-        cut_low_freq / cut_high_freq: Frequency band (kHz) shown in the spectrograms.
-        image_normalize: Divide images by 255 before prediction (depends on how the model was trained).
+        cut_low_freq / cut_high_freq: Frequency band (kHz) shown in the spectrograms
+            (None: the values of the spectrogram preset, 2-22 kHz for "paper").
+        image_normalize: Divide images by 255 before prediction (Keras models trained that way only).
         start_time / end_time: Portion of each recording to analyse, in seconds (end_time=None: whole file).
         batch_size: Number of spectrograms per inference batch.
         save: Save every spectrogram image.
         save_positives: Save the spectrogram images classified as whistles.
-        model_path: Keras model file.
+        model_path: Keras model file (.keras / .h5) or PyTorch checkpoint of the paper's VGG16 (.pt).
         binary_threshold: Minimum score for a window to count as a whistle.
         max_workers: Number of recordings processed in parallel (None or <= 0: automatic).
         specific_files: Only process these file names (relative to the recordings folder).
         progress_callback: Called as ``progress_callback(percent, status_text)`` after each file.
+        spectrogram: "paper" (default: non-overlapping 0.4 s windows, 1024-point FFT with hop 512,
+            2-22 kHz, as in arXiv:2609.34839) or "legacy" (0.8 s windows every 0.4 s, 2048-point FFT
+            with 20% overlap, 3-20 kHz: the settings of this repository before the paper).
 
     Returns:
         Dict mapping each processed file name to its number of detections
@@ -317,18 +409,31 @@ def process_predict_extract(recording_folder_path: str, saving_folder: str,
         max_workers = get_optimal_worker_count(len(files_to_process))
         logger.info("Automatically selected worker count: %d", max_workers)
 
-    detector = WhistleDetector(model_path)
+    if spectrogram not in SPECTROGRAM_PRESETS:
+        raise ValueError(f"Unknown spectrogram preset {spectrogram!r} (choose from {sorted(SPECTROGRAM_PRESETS)})")
+    settings = SPECTROGRAM_PRESETS[spectrogram]
+    settings = replace(
+        settings,
+        cut_low_frequency=settings.cut_low_frequency if cut_low_freq is None else cut_low_freq,
+        cut_high_frequency=settings.cut_high_frequency if cut_high_freq is None else cut_high_freq,
+    )
+
+    detector = load_detector(model_path)
+    if image_normalize and getattr(detector, "handles_normalization", False):
+        logger.warning("image_normalize ignored: this model normalises its inputs itself")
+        image_normalize = False
 
     config = ProcessingConfig(
-        batch_duration=batch_size * WINDOW_HOP,
+        batch_duration=batch_size * settings.window_hop,
         batch_size=batch_size,
-        cut_low_frequency=cut_low_freq,
-        cut_high_frequency=cut_high_freq,
+        cut_low_frequency=settings.cut_low_frequency,
+        cut_high_frequency=settings.cut_high_frequency,
         image_normalize=image_normalize,
         save_positive_examples=save_positives,
         binary_threshold=binary_threshold,
         image_size=detector.image_size,
         save_all_images=save,
+        spectrogram=settings,
     )
 
     results: Dict[str, Optional[int]] = {}

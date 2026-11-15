@@ -30,37 +30,45 @@ def test_audioextraits_is_lossless(wav_file, tmp_path):
     assert len(clip) == int(0.5 * SAMPLE_RATE)
 
 
+def detections(count, first=0):
+    return [(round(0.4 * i, 1), round(0.4 * i + 0.4, 1)) for i in range(first, first + count)]
+
+
 def test_extraction_from_predictions_folder(wav_file, tmp_path):
     root = tmp_path / "analysed"
     stem = wav_file.stem
-    rows = [(round(0.4 * i, 1), round(0.4 * i + 0.4, 1)) for i in range(9)]
-    write_predictions(root, stem, rows)
+    write_predictions(root, stem, detections(9))  # 0.0 -> 3.6 s of contiguous detections
+    short_folder = write_predictions(root, "short", detections(2))  # 0.8 s: below the 2 s minimum
     empty_folder = write_predictions(root, "Exp_02_Aug_2023_0845_channel_1", [])
 
     pp.process_prediction_files_in_folder(str(root), str(wav_file.parent), max_workers=2, audio_only=True)
 
-    # merged interval is 3.6 s long, below the 5 s minimum duration: nothing extracted for it
-    assert not list((root / "extracted_audio").rglob("*.wav"))
+    clips = list((root / "extracted_audio").rglob("*.wav"))
+    assert [c.name for c in clips] == ["extrait_0.0_3.6.wav"]
+    assert sf.info(str(clips[0])).frames == int(3.6 * SAMPLE_RATE)
+    assert (short_folder / "pas_d_extraits" / "No_sequence_long_enough.txt").exists()
     assert (empty_folder / "pas_d_extraits" / "No_whistles_detected.txt").exists()
 
 
-def test_long_detection_is_extracted(tmp_path):
+def test_sequence_rules_are_configurable(tmp_path):
     recordings = tmp_path / "rec"
     recordings.mkdir()
-    stem = "long"
-    wavfile.write(str(recordings / f"{stem}.wav"), SAMPLE_RATE, make_signal(duration=8.0))
+    wavfile.write(str(recordings / "long.wav"), SAMPLE_RATE, make_signal(duration=8.0))
     root = tmp_path / "analysed"
-    write_predictions(root, stem, [(round(0.4 * i, 1), round(0.4 * i + 0.4, 1)) for i in range(15)])
+    # two groups of detections 2 s apart: 0-2.4 s and 4.4-6.8 s
+    write_predictions(root, "long", detections(6) + detections(6, first=11))
 
     out = tmp_path / "clips"
     pp.process_prediction_files_in_folder(str(root), str(recordings), audio_only=True, exit=str(out))
-    clips = list((out / stem).glob("*.wav"))
-    assert [c.name for c in clips] == ["extrait_0_6.0.wav"]
-    assert sf.info(str(clips[0])).frames == 6 * SAMPLE_RATE
+    assert sorted(c.name for c in (out / "long").glob("*.wav")) == ["extrait_0.0_6.8.wav"]  # gap < 6 s: one sequence
+
+    out = tmp_path / "clips_split"
+    pp.process_prediction_files_in_folder(str(root), str(recordings), audio_only=True, exit=str(out), max_gap=1.0)
+    assert sorted(c.name for c in (out / "long").glob("*.wav")) == ["extrait_0.0_2.4.wav", "extrait_4.4_6.8.wav"]
 
 
 def test_missing_recording_leaves_a_note(tmp_path):
     root = tmp_path / "analysed"
-    folder = write_predictions(root, "gone", [(round(0.4 * i, 1), round(0.4 * i + 0.4, 1)) for i in range(15)])
+    folder = write_predictions(root, "gone", detections(15))
     pp.process_prediction_files_in_folder(str(root), str(tmp_path), audio_only=True)
     assert (folder / "pas_d_extraits" / "No_Audio_found.txt").exists()

@@ -310,7 +310,7 @@ class ProcessingGUI:
         )
 
         self.clf_entry = ttk.Entry(freq_frame)
-        self.clf_entry.insert(0, "3")
+        self.clf_entry.insert(0, "2")  # 2-22 kHz: band of the OpenWhistle paper
         self.clf_entry.grid(row=0, column=1, sticky="ew", padx=5, pady=5)
         self.tooltip_manager.add_tooltip(
             self.clf_entry,
@@ -323,7 +323,7 @@ class ProcessingGUI:
         )
 
         self.chf_entry = ttk.Entry(freq_frame)
-        self.chf_entry.insert(0, "20")
+        self.chf_entry.insert(0, "22")
         self.chf_entry.grid(row=1, column=1, sticky="ew", padx=5, pady=5)
         self.tooltip_manager.add_tooltip(
             self.chf_entry,

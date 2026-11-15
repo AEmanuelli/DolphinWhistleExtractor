@@ -35,29 +35,42 @@ def test_accuracy_interval_brackets_accuracy():
 
 
 def test_predict_handles_sigmoid_and_two_class_outputs():
-    class Model:
-        input_shape = (None, 224, 224, 3)
+    class Detector:
+        image_size = (224, 224)
 
         def __init__(self, two_class):
             self.two_class = two_class
 
-        def __call__(self, batch, training=False):
+        def predict(self, batch):
             score = batch.mean(axis=(1, 2, 3)) / 255.0
             return np.stack([1 - score, score], axis=1) if self.two_class else score[:, None]
 
     images = np.stack([np.zeros((224, 224), np.uint8), np.full((224, 224), 255, np.uint8)])
     for two_class in (False, True):
-        assert ev.predict(Model(two_class), images, "raw").tolist() == [0.0, 1.0]
-    assert ev.predict(Model(False), images, "div255").tolist() == pytest.approx([0.0, 1 / 255])
+        assert ev.predict(Detector(two_class), images, "raw").tolist() == [0.0, 1.0]
+    assert ev.predict(Detector(False), images, "div255").tolist() == pytest.approx([0.0, 1 / 255])
+
+    # a detector that normalises its inputs itself always receives raw 0-255 images
+    detector = Detector(False)
+    detector.handles_normalization = True
+    assert ev.predict(detector, images, "div255").tolist() == [0.0, 1.0]
+
+    # images are resized to the detector's input size
+    detector.image_size = (64, 32)
+    detector.predict = lambda batch: np.full((len(batch), 1), float(batch.shape[1:3] == (32, 64)))
+    assert ev.predict(detector, images).tolist() == [1.0, 1.0]
 
 
-def test_pipeline_image_matches_pipeline(wav_file):
-    import io
-    from scipy.io import wavfile
+def test_pipeline_image_is_the_benchmark_image():
+    import cv2
     import utils
 
-    fs, x = utils.load_audio(str(wav_file))
-    clip = io.BytesIO()
-    wavfile.write(clip, fs, x[:int(0.8 * fs)])
-    image = ev.pipeline_image(clip.getvalue(), utils.STFT_OVERLAP, 3, 20)
-    assert np.array_equal(image, utils.process_audio_file(str(wav_file), end_time=1)[0])
+    folder = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "openwhistle_cnn")
+    with open(os.path.join(folder, "whistle.wav"), "rb") as f:
+        image = ev.pipeline_image(f.read(), utils.PAPER_SPECTROGRAM)
+    expected = cv2.imread(os.path.join(folder, "whistle.png"))
+    assert np.abs(image.astype(int) - expected.astype(int)).max() <= 1
+
+    with open(os.path.join(folder, "whistle.wav"), "rb") as f:
+        legacy = ev.pipeline_image(f.read(), utils.LEGACY_SPECTROGRAM)  # the whole clip is one window
+    assert legacy.shape == (875, 1167, 3)

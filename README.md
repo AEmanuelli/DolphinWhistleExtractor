@@ -2,6 +2,11 @@
 
 A comprehensive tool for detecting and extracting dolphin whistles from audio and video recordings using deep neural networks.
 
+The detection follows the whistle-detection pipeline of the OpenWhistle paper
+([arXiv:2609.34839](https://arxiv.org/abs/2609.34839)): non-overlapping 0.4 s windows, 2–22 kHz spectrograms,
+whistle sequences of 2–20 s. See [docs/REPRODUCE_OPENWHISTLE_CNN.md](docs/REPRODUCE_OPENWHISTLE_CNN.md) for the
+details and for how to reproduce the paper's CNN.
+
 ## 🌟 Features
 
 - Automated detection of dolphin whistles using deep learning
@@ -73,8 +78,12 @@ cd Predict_and_extract
 # Detect whistles and save the positive spectrograms
 python main.py --recordings /path/to/recordings --saving_folder /path/to/output --save_p
 
-# Whole recordings (default: first 30 min), then extract the detected whistles as .wav clips
+# Whole recordings (default: first 30 min), then extract the detected whistle sequences as .wav clips
 python main.py --recordings /path/to/recordings --saving_folder /path/to/output --end_time -1 --extract
+
+# Use the VGG16 detector published with the OpenWhistle paper (needs: pip install torch torchvision)
+curl -L -o model_vgg_final_best.pt https://huggingface.co/dolphinteam/OpenWhistle-CNN-VGG16/resolve/main/model_vgg_final_best.pt
+python main.py --recordings /path/to/recordings --saving_folder /path/to/output --model_path model_vgg_final_best.pt
 
 # All options
 python main.py --help
@@ -84,13 +93,15 @@ Main options:
 
 | Option | Default | Meaning |
 |---|---|---|
-| `--model_path` | `models/base_MobileNetV2.keras` | Keras model used for detection |
+| `--model_path` | `models/base_MobileNetV2.keras` | Keras model (`.keras` / `.h5`) or PyTorch checkpoint of the paper's VGG16 (`.pt`) |
+| `--spectrogram` | `paper` | `paper`: 0.4 s non-overlapping windows, FFT 1024 / hop 512, 2–22 kHz. `legacy`: 0.8 s windows every 0.4 s, FFT 2048 with 20 % overlap, 3–20 kHz (for models trained on the older images) |
 | `--start_time` / `--end_time` | `0` / `1800` | Portion of each recording to analyse, in seconds (`--end_time -1`: whole file) |
-| `--CLF` / `--CHF` | `3` / `20` | Frequency band (kHz) shown in the spectrograms |
+| `--CLF` / `--CHF` | `2` / `22` | Frequency band (kHz) shown in the spectrograms (`3` / `20` with `--spectrogram legacy`) |
 | `--threshold` | `0.5` | Minimum score for a window to count as a whistle |
 | `--image_norm` | off | Divide images by 255. Only for models trained on normalized images: **not** the bundled ones |
 | `--save_p` / `--save` | off | Save positive / all spectrogram images |
-| `--extract` | off | Cut the detected whistles out of the recordings (audio clips) |
+| `--extract` | off | Cut the detected whistle sequences out of the recordings (audio clips) |
+| `--max_gap` / `--min_duration` / `--max_duration` | `6` / `2` / `20` | Sequence rule for `--extract`, in seconds (see below) |
 | `--specific_files` | – | Text file listing the recordings to process (one name per line) |
 
 The last `--recordings` / `--saving_folder` used are remembered in `~/.predict_extract_config.json`.
@@ -102,6 +113,7 @@ The last `--recordings` / `--saving_folder` used are remembered in `~/.predict_e
 ├── <recording>/
 │   ├── <recording>.wav_predictions.csv   # file_name, initial_point, finish_point, confidence
 │   ├── positive/                         # spectrograms of the detected windows (--save_p)
+│   ├── all/                              # every spectrogram (--save)
 │   └── pas_d_extraits/                   # note explaining why nothing was extracted (--extract)
 └── extracted_audio/<recording>/extrait_<start>_<end>.wav   # with --extract
 ```
@@ -111,13 +123,20 @@ A recording that fails (e.g. corrupted file) gets no CSV and is retried on the n
 
 ## 🔧 How it works
 
-1. **Detection** (`predict_and_extract_online.py`): each recording is cut into 0.8 s windows, one every 0.4 s.
-   Every window becomes a grayscale spectrogram image (`utils.py`) classified by the CNN.
-   In the CSV a detection is reported as the 0.4 s step `[initial_point, finish_point]` at which its window starts.
-2. **Extraction** (`process_predictions.py`): detections less than 3 s apart are merged; merged segments longer
-   than 5 s are cut out of the recording. Audio clips keep the original sampling rate and bit depth.
+1. **Detection** (`predict_and_extract_online.py`): each recording is resampled to 96 kHz if needed and cut into
+   non-overlapping 0.4 s windows. Every window becomes a 224×224 grayscale image of its log-power spectrogram
+   (Blackman window of 1024 samples, hop 512, 2–22 kHz, min-max normalised; `utils.py`) and is classified as
+   whistle or noise. A detection is reported in the CSV as the window `[initial_point, finish_point]`.
+2. **Extraction** (`process_predictions.py`): detections less than 6 s apart are grouped into a sequence;
+   sequences shorter than 2 s are dropped and runs longer than 20 s are split. Each sequence is cut out of the
+   recording; audio clips keep the original sampling rate and bit depth.
    Video clips (with or without the hydrophone audio) are available from Python via
    `process_prediction_files_in_folder(..., audio_only=False)`.
+
+These are the settings of the OpenWhistle paper and of its [official code](https://github.com/sumbre-lab/OpenWhistle);
+the images are the same as those of the
+[OpenWhistle-CNN](https://huggingface.co/datasets/dolphinteam/OpenWhistle-CNN) dataset.
+`--spectrogram legacy` gives the previous behaviour of this repository (0.8 s windows every 0.4 s, 3–20 kHz).
 
 ## 📁 Project Structure
 
@@ -134,6 +153,7 @@ A recording that fails (e.g. corrupted file) gets no CSV and is retried on the n
 │   └── ...                         # research scripts (see note below)
 ├── Train_model/                    # dataset creation, training scripts / notebooks, evaluate_models.py
 ├── Models_vs_years_comparison/     # comparison of the models across recording years
+├── docs/                           # how to reproduce the OpenWhistle CNN, leakage checks
 ├── tests/                          # pytest suite
 └── requirements.txt
 ```
@@ -144,48 +164,45 @@ A recording that fails (e.g. corrupted file) gets no CSV and is retried on the n
 
 ## 📊 Model evaluation
 
-The bundled models were evaluated on the **test split of the public
+Models are evaluated on the **test split of the public
 [OpenWhistle-CNN](https://huggingface.co/datasets/dolphinteam/OpenWhistle-CNN) benchmark**: 16,708 windows of 0.4 s
-(8,354 whistle / 8,354 noise) from 261 recordings of 2019-2020, session-disjoint from its train/validation splits.
-Threshold 0.5, raw 0-255 images; the 95% interval of the accuracy resamples whole recordings.
+(8,354 whistle / 8,354 noise) from 261 recordings of 2019-2020; no recording, session or day is shared with its
+train / validation splits (2021-2024). Threshold 0.5; the 95% interval of the accuracy resamples whole recordings.
 
-| Model | Accuracy (95% CI) | Recall | Specificity | ROC AUC |
-|---|---|---|---|---|
-| `base_MobileNetV2` (default) | **97.9%** (97.5-98.2) | 97.7% | 98.0% | 0.993 |
-| `base_EfficientNetB0` | 95.0% (94.5-95.4) | 92.2% | 97.7% | 0.978 |
-| `base_mobilenetv2_best_val_loss` | 94.5% (94.0-94.9) | 93.0% | 95.9% | 0.972 |
+| Model | Accuracy (95% CI) | Precision | Recall | Specificity | ROC AUC |
+|---|---|---|---|---|---|
+| `base_MobileNetV2` (default) | **97.9%** (97.5-98.2) | 98.0% | 97.7% | 98.0% | 0.993 |
+| VGG16 of the OpenWhistle paper (`model_vgg_final_best.pt`) | 97.2% (96.9-97.5) | 96.5% | 98.0% | 96.5% | 0.988 |
+| `base_EfficientNetB0` | 95.0% (94.5-95.4) | 97.5% | 92.2% | 97.7% | 0.978 |
+| `base_mobilenetv2_best_val_loss` | 94.5% (94.0-94.9) | 95.8% | 93.0% | 95.9% | 0.972 |
 
 Reproduce with:
 
 ```bash
 pip install pyarrow            # in addition to requirements.txt
-python Train_model/evaluate_models.py                     # spectrograms shipped with the dataset
-python Train_model/evaluate_models.py --source pipeline   # spectrograms recomputed by this repository
+python Train_model/evaluate_models.py                                  # the Keras models of models/
+python Train_model/evaluate_models.py --models model_vgg_final_best.pt # the paper's VGG16 (needs torch, torchvision)
+python Train_model/evaluate_models.py --source pipeline                # spectrograms recomputed from the audio
 ```
 
-What the evaluation showed:
+Notes:
 
-- **Do not use `--image_norm` with the bundled models.** They expect raw 0-255 images; with images divided by 255
-  the three of them predict "noise" for every window (recall 0%, accuracy 50%).
-- **The scores depend on how the spectrogram is computed.** Feeding the same 0.4 s windows through this repository's
-  spectrogram code (`--source pipeline`) gives the figures below. The dataset images are matched by an STFT overlap
-  of 80%; the detection pipeline uses 20% (as the original MATLAB script), on 0.8 s windows.
+- The row of the paper's VGG16 reproduces the published confusion matrix exactly (TP 8186, FP 295, FN 168, TN 8059,
+  i.e. precision 96.52%, recall 97.99%).
+- The detection pipeline computes the same images as the benchmark, so these figures are also those of
+  `main.py`: on a recording made of 1,500 test windows put end to end, the command line takes the same decision
+  as the image-level evaluation for every window.
+- **Do not use `--image_norm` with the bundled Keras models.** They expect raw 0-255 images; with images divided by
+  255 the three of them predict "noise" for every window (recall 0%, accuracy 50%). The option is ignored for the
+  paper's VGG16, which normalises its inputs itself.
+- The benchmark tells nothing about which data the bundled Keras models were trained on; if a model was trained on
+  recordings of 2019-2020, its figures above are optimistic. The paper's VGG16 was trained on 2021-2024 only.
+- With the settings used by this repository before version 2.0 (`--spectrogram legacy`: 0.8 s windows every 0.4 s,
+  20% STFT overlap, 3-20 kHz) the bundled models see images they were not trained on; on synthetic 0.8 s windows
+  `base_MobileNetV2` dropped to about 94%.
 
-  | Spectrogram fed to the model | `base_MobileNetV2` | `base_EfficientNetB0` | `base_mobilenetv2_best_val_loss` |
-  |---|---|---|---|
-  | Shipped with the dataset (0.4 s) | 97.9% | 95.0% | 94.5% |
-  | Repository code, 0.4 s window, 80% overlap | 97.6% | 95.3% | 95.3% |
-  | Repository code, 0.4 s window, 20% overlap | 66.1% | 81.8% | 88.5% |
-  | Pipeline setting: 0.8 s window, 20% overlap\* | 94.3% | 93.8% | 91.0% |
-  | 0.8 s window, 80% overlap\* | 96.5% | 89.7% | 90.1% |
-
-  \* The benchmark has no 0.8 s windows: these rows use 4,000 synthetic windows made of a test window followed or
-  preceded by a noise window of the same recording, so they are indicative only.
-
-  In short, the detection pipeline (0.8 s windows) is expected to score a few points below the benchmark figures,
-  and the models work best on 0.4 s windows rendered with 80% overlap, the format of the benchmark images.
-- The benchmark tells nothing about which data each bundled model was trained on; if a model was trained on
-  recordings of 2019-2020, its figures above are optimistic.
+Train / test leakage checks and the comparison with the earlier VGG article (Korkmaz et al. 2023) are in
+[docs/REPRODUCE_OPENWHISTLE_CNN.md](docs/REPRODUCE_OPENWHISTLE_CNN.md).
 
 ## 🧪 Tests
 

@@ -12,3 +12,6 @@ scipy==1.13.1
 soundfile>=0.12
 tensorflow==2.17.0
 tqdm==4.66.2
+# Optional, only to run the PyTorch VGG16 checkpoint of the OpenWhistle paper:
+# torch
+# torchvision

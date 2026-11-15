@@ -1,5 +1,9 @@
+import os
+
+import cv2
 import numpy as np
 import pandas as pd
+import pytest
 from scipy.io import wavfile
 
 import utils
@@ -108,3 +112,86 @@ def test_save_writes_images(wav_file, tmp_path):
     out = tmp_path / "imgs"
     utils.process_audio_file(str(wav_file), saving_folder=str(out), end_time=2, save=True)
     assert len(list(out.glob("*.jpg"))) == 4
+
+
+# --- paper-faithful spectrograms (arXiv:2609.34839) ---------------------------------------------
+
+BENCHMARK_SAMPLES = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "openwhistle_cnn")
+
+
+def test_paper_settings_match_the_paper():
+    settings = utils.PAPER_SPECTROGRAM
+    assert (settings.window_duration, settings.window_hop) == (0.4, 0.4)  # non-overlapping 0.4 s windows
+    assert (settings.wlen, settings.nfft, settings.noverlap) == (1024, 1024, 512)  # hop of 512 samples
+    assert (settings.cut_low_frequency, settings.cut_high_frequency) == (2.0, 22.0)
+    assert settings.target_fs == 96000
+    assert utils.LEGACY_SPECTROGRAM.noverlap == 2048 - round(0.8 * 2048)
+
+
+@pytest.mark.parametrize("name", ["whistle", "noise"])
+def test_spectrogram_reproduces_openwhistle_cnn_images(name):
+    """The pipeline computes the spectrograms shipped with the OpenWhistle-CNN benchmark."""
+    expected = cv2.imread(os.path.join(BENCHMARK_SAMPLES, name + ".png"))
+    fs, x = utils.load_audio(os.path.join(BENCHMARK_SAMPLES, name + ".wav"))
+    fs, x = utils.prepare_audio(x, fs)
+    image = utils.spectrogram_image(x, fs)
+
+    assert image.shape == expected.shape == (224, 224, 3)
+    difference = np.abs(image.astype(int) - expected.astype(int))
+    # identical up to float rounding across library versions: at most one grey level on a few pixels
+    assert difference.max() <= 1
+    assert (difference > 0).mean() < 0.001
+
+
+def test_prepare_audio_scales_and_selects_first_channel():
+    stereo = np.array([[16384, 0], [-32768, 0]], dtype=np.int16)
+    fs, x = utils.prepare_audio(stereo, 96000)
+    assert fs == 96000 and x.dtype == np.float32
+    assert x.tolist() == [0.5, -1.0]
+
+    fs, x = utils.prepare_audio(np.array([0.25, -0.5]), 48000, utils.LEGACY_SPECTROGRAM)  # no target rate
+    assert fs == 48000 and x.dtype == np.float32 and x.tolist() == [0.25, -0.5]
+
+
+def test_prepare_audio_resamples_to_target_rate():
+    pytest.importorskip("librosa")
+    fs, x = utils.prepare_audio(make_signal(duration=1.0, fs=48000), 48000)
+    assert fs == 96000 and len(x) == 96000
+
+
+def test_window_starts():
+    fs = SAMPLE_RATE
+    starts, size = utils.window_starts(4 * fs, fs)  # 4 s -> ten non-overlapping 0.4 s windows
+    assert size == 38400 and starts.tolist() == [38400 * k for k in range(10)]
+
+    starts, _ = utils.window_starts(4 * fs, fs, start_time=1.0, end_time=2.0)  # two complete windows in [1, 2]
+    assert starts.tolist() == [96000, 134400]
+    assert len(utils.window_starts(fs // 4, fs)[0]) == 0  # shorter than one window
+
+    starts, size = utils.window_starts(4 * fs, fs, utils.LEGACY_SPECTROGRAM)  # 0.8 s windows every 0.4 s
+    assert size == 76800 and len(starts) == 9 and starts[1] == 38400
+
+
+def test_spectrogram_image_sizes_and_silence():
+    fs, x = utils.prepare_audio(make_signal(duration=0.8), SAMPLE_RATE)
+    assert utils.spectrogram_image(x[:38400], fs, size=(100, 60)).shape == (60, 100, 3)
+    legacy = utils.spectrogram_image(x, fs, utils.LEGACY_SPECTROGRAM)
+    assert legacy.shape == (875, 1167, 3) and legacy.dtype == np.uint8
+    assert not utils.spectrogram_image(np.zeros(38400, dtype=np.float32), fs).any()
+
+
+def test_build_sequences_paper_rule():
+    step = lambda k: (round(0.4 * k, 1), round(0.4 * k + 0.4, 1))
+    # 0-2.4 s; a detection 4 s later joins it (gap < 6 s); one 10 s later starts a new, too short, sequence
+    detections = [step(k) for k in range(6)] + [(6.4, 6.8), (16.8, 17.2)]
+    assert utils.build_sequences(detections) == [(0.0, 6.8)]
+    assert utils.build_sequences([]) == []
+    assert utils.build_sequences([(0.0, 0.4)]) == []  # shorter than 2 s
+
+    # a 50 s run of detections is split into sequences of at most 20 s
+    sequences = utils.build_sequences([step(k) for k in range(125)])
+    assert sequences == [(0.0, 20.0), (20.0, 40.0), (40.0, 50.0)]
+    assert all(end - start <= 20 for start, end in sequences)
+
+    # custom rule: no grouping across 1 s gaps, keep everything
+    assert utils.build_sequences([(0, 0.4), (2, 2.4)], max_gap=1, min_duration=0) == [(0, 0.4), (2, 2.4)]

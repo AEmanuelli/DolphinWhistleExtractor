@@ -1,9 +1,13 @@
 """Post-processing of predictions: extract the detected whistles as audio/video clips.
 
 Reads the ``*.wav_predictions.csv`` files written by
-``predict_and_extract_online.process_predict_extract``, merges neighbouring
-detections into intervals and cuts the corresponding segments out of the
-original recordings (audio only, or video with/without the hydrophone audio).
+``predict_and_extract_online.process_predict_extract``, groups the detections
+into whistle sequences and cuts the corresponding segments out of the original
+recordings (audio only, or video with/without the hydrophone audio).
+
+Audio sequences follow the rule of the OpenWhistle paper (arXiv:2609.34839):
+detections less than 6 s apart are grouped, and sequences between 2 and 20 s
+are kept (longer runs are split).
 
 Audio clips are cut with ``soundfile``: samples are copied as they are, so the
 original sampling rate (e.g. 96 kHz) and bit depth are preserved.
@@ -16,15 +20,19 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from tqdm import tqdm
 
 try:  # works both as a script directory import and as a package import
-    from utils import (fusionner_intervalles, fusionner_intervalles_avec_seuil, lire_csv_extraits,
+    from utils import (build_sequences, fusionner_intervalles, lire_csv_extraits,
                        transform_file_name, trouver_fichier_video)
 except ImportError:  # pragma: no cover
-    from .utils import (fusionner_intervalles, fusionner_intervalles_avec_seuil, lire_csv_extraits,
+    from .utils import (build_sequences, fusionner_intervalles, lire_csv_extraits,
                         transform_file_name, trouver_fichier_video)
 
 logger = logging.getLogger(__name__)
 
 NO_EXTRACT_FOLDER = "pas_d_extraits"
+# Sequence rule of the OpenWhistle paper (seconds)
+DEFAULT_MAX_GAP = 6.0
+DEFAULT_MIN_DURATION = 2.0
+DEFAULT_MAX_DURATION = 20.0
 
 
 def audioextraits(intervalles, fichier_audio, dossier_sortie_audio):
@@ -95,12 +103,17 @@ def find_recording(recording_folder_path, folder_name):
 
 
 def process_non_empty_file(prediction_file_path, folder_name, recording_folder_path, exit, folder_path,
-                           audio=True, audio_only=True):
+                           audio=True, audio_only=True, max_gap=DEFAULT_MAX_GAP,
+                           min_duration=DEFAULT_MIN_DURATION, max_duration=DEFAULT_MAX_DURATION):
     """Extract the clips of one recording from its (non-empty) predictions CSV."""
     intervalles = lire_csv_extraits(prediction_file_path)
 
     if audio_only:
-        intervalles_fusionnes = fusionner_intervalles_avec_seuil(intervalles, duration_threshold=5, fusion_threshold=3)
+        intervalles_fusionnes = build_sequences(intervalles, max_gap, min_duration, max_duration)
+        if not intervalles_fusionnes:
+            _write_note(folder_path, "No_sequence_long_enough.txt",
+                        f"Detections of {folder_name} form no sequence of at least {min_duration} s")
+            return
         fichier_audio = find_recording(recording_folder_path, folder_name)
         if fichier_audio is None:
             _write_note(folder_path, "No_Audio_found.txt", f"No audio file found for {folder_name}")
@@ -138,7 +151,7 @@ def handle_missing_file(folder_path, folder_name):
 
 
 def process_prediction_file(prediction_file_path, folder_name, recording_folder_path, folder_path, exit, audio,
-                            audio_only=True):
+                            audio_only=True, **sequence_rules):
     """Process one predictions CSV (missing, empty or with detections)."""
     if not os.path.exists(prediction_file_path):
         handle_missing_file(folder_path, folder_name)
@@ -149,21 +162,23 @@ def process_prediction_file(prediction_file_path, folder_name, recording_folder_
 
     if has_detections:
         process_non_empty_file(prediction_file_path, folder_name, recording_folder_path, folder_path=folder_path,
-                               exit=exit, audio=audio, audio_only=audio_only)
+                               exit=exit, audio=audio, audio_only=audio_only, **sequence_rules)
     else:
         handle_empty_file(folder_path, folder_name)
 
 
-def process_folder(root, folder_name, recording_folder_path, folder_path, exit, audio=True, audio_only=True):
+def process_folder(root, folder_name, recording_folder_path, folder_path, exit, audio=True, audio_only=True,
+                   **sequence_rules):
     """Process the predictions CSV of one recording folder, if there is one."""
     prediction_file_path = os.path.join(root, folder_name, folder_name + ".wav_predictions.csv")
     if os.path.exists(prediction_file_path):
         process_prediction_file(prediction_file_path, folder_name, recording_folder_path, folder_path,
-                                audio=audio, audio_only=audio_only, exit=exit)
+                                audio=audio, audio_only=audio_only, exit=exit, **sequence_rules)
 
 
 def process_prediction_files_in_folder(root, recording_folder_path, max_workers=8, audio=True, audio_only=True,
-                                       exit=None):
+                                       exit=None, max_gap=DEFAULT_MAX_GAP, min_duration=DEFAULT_MIN_DURATION,
+                                       max_duration=DEFAULT_MAX_DURATION):
     """
     Extract the detected whistles of every recording analysed in ``root``.
 
@@ -174,6 +189,9 @@ def process_prediction_files_in_folder(root, recording_folder_path, max_workers=
         audio: When extracting video, also mux the hydrophone audio into the clips.
         audio_only: Extract audio clips only (no video needed).
         exit: Folder receiving the audio clips (default: ``<root>/extracted_audio``).
+        max_gap: Detections closer than this (s) belong to the same sequence.
+        min_duration: Sequences shorter than this (s) are dropped.
+        max_duration: Longer runs of detections are split into sequences of at most this (s).
     """
     if exit is None:
         exit = os.path.join(root, "extracted_audio")
@@ -184,7 +202,8 @@ def process_prediction_files_in_folder(root, recording_folder_path, max_workers=
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         futures = {
             executor.submit(process_folder, root, name, recording_folder_path, os.path.join(root, name),
-                            audio=audio, audio_only=audio_only, exit=exit): name
+                            audio=audio, audio_only=audio_only, exit=exit, max_gap=max_gap,
+                            min_duration=min_duration, max_duration=max_duration): name
             for name in folders
         }
         for future in tqdm(as_completed(futures), total=len(futures), desc="Extracting whistles"):

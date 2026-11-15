@@ -15,7 +15,14 @@ the "Model evaluation" section of the main README and Train_model/evaluate_model
   base_EfficientNetB0             95.0%
   base_mobilenetv2_best_val_loss  94.5%
 
-Older VGG models (not stored in the repository, *.h5 files are git-ignored):
+The VGG16 detector of the OpenWhistle paper (arXiv:2609.34839, 97.2% on the same
+test split) is not stored here. Download its PyTorch checkpoint and pass it to
+--model_path (requires torch and torchvision):
+  https://huggingface.co/dolphinteam/OpenWhistle-CNN-VGG16/resolve/main/model_vgg_final_best.pt
+
+Older Keras VGG models (not stored in the repository, *.h5 files are git-ignored).
+They follow Korkmaz et al. 2023 (doi:10.3389/frai.2023.1099022), whose images are
+0.8 s windows in the 3-20 kHz band: run them with --spectrogram legacy.
   model_vgg.h5            not fine-tuned
   model_finetuned_vgg.h5  fine-tuned on our data (98.5% accuracy)
 Training data: https://www.kaggle.com/datasets/alexisemanuelli/whistles-baby-hit-me-up/versions/1

@@ -10,6 +10,8 @@ importing this module stays cheap.
 import csv
 import os
 import re
+from dataclasses import dataclass
+from typing import Optional, Tuple
 
 import numpy as np
 import pandas as pd
@@ -17,14 +19,48 @@ from scipy.io import wavfile
 from scipy.signal import spectrogram
 from scipy.signal.windows import blackman
 
-# Duration (s) of the audio window turned into one spectrogram image, and the
-# hop (s) between two consecutive windows. The models were trained with these.
-WINDOW_DURATION = 0.8
-WINDOW_HOP = 0.4
-# Fraction of the FFT window shared by two consecutive FFT frames of a spectrogram.
-# 0.2 reproduces the original MATLAB script (Train_model/Create_dataset/save_spectrogram.m).
-STFT_OVERLAP = 0.2
 AUDIO_EXTENSIONS = (".wav", ".flac")
+
+
+@dataclass(frozen=True)
+class SpectrogramSettings:
+    """How a recording is cut into windows and how each window becomes an image.
+
+    The defaults are those of the OpenWhistle paper (arXiv:2609.34839, appendix B)
+    and of its official code (github.com/sumbre-lab/OpenWhistle, cnn/utils/model.py):
+    non-overlapping 0.4 s windows, log-power spectrogram with a 1024-sample
+    Blackman window, FFT size 1024, hop 512, cropped to 2-22 kHz, min-max
+    normalised and resized to the model input size.
+    """
+    window_duration: float = 0.4        # seconds of audio per image
+    window_hop: float = 0.4             # seconds between the starts of two consecutive windows
+    wlen: int = 1024                    # FFT window length (samples)
+    nfft: int = 1024                    # FFT size
+    stft_overlap: float = 0.5           # fraction of the FFT window shared by consecutive frames
+    cut_low_frequency: float = 2.0      # kHz
+    cut_high_frequency: float = 22.0    # kHz
+    target_fs: Optional[int] = 96000    # recordings at another rate are resampled (None: never)
+    image_size: Optional[Tuple[int, int]] = None  # (width, height); None: the model input size
+
+    @property
+    def noverlap(self) -> int:
+        """Number of samples shared by two consecutive FFT frames."""
+        return self.wlen - round((1 - self.stft_overlap) * self.wlen)
+
+
+PAPER_SPECTROGRAM = SpectrogramSettings()
+# Settings of this repository before it was aligned with the paper (they follow the original
+# MATLAB script Train_model/Create_dataset/save_spectrogram.m): 0.8 s windows every 0.4 s.
+# Use them with models trained on such images (e.g. the older VGG .h5 models).
+LEGACY_SPECTROGRAM = SpectrogramSettings(window_duration=0.8, window_hop=0.4, wlen=2048, nfft=2048,
+                                         stft_overlap=0.2, cut_low_frequency=3.0, cut_high_frequency=20.0,
+                                         target_fs=None, image_size=(1167, 875))
+SPECTROGRAM_PRESETS = {"paper": PAPER_SPECTROGRAM, "legacy": LEGACY_SPECTROGRAM}
+
+# Legacy constants, used by the legacy helpers `process_audio_file` / `audio_to_spectrogram_images`.
+WINDOW_DURATION = LEGACY_SPECTROGRAM.window_duration
+WINDOW_HOP = LEGACY_SPECTROGRAM.window_hop
+STFT_OVERLAP = LEGACY_SPECTROGRAM.stft_overlap
 
 # =============================================================================
 #********************* FUNCTIONS 
@@ -196,6 +232,46 @@ def fusionner_intervalles_avec_seuil(intervalles, fusion_threshold=3, duration_t
         intervalles_fusionnes.append((max(0, current_debut), current_fin))
     
     return intervalles_fusionnes
+
+
+def build_sequences(intervalles, max_gap=6.0, min_duration=2.0, max_duration=20.0):
+    """
+    Group detections into whistle sequences, as in the OpenWhistle paper.
+
+    Consecutive detections separated by less than ``max_gap`` seconds belong to
+    the same sequence; a sequence is closed when adding a detection would make
+    it longer than ``max_duration``; sequences shorter than ``min_duration``
+    are dropped. Same rule as ``cnn/create_sequences_whistles.py`` of the
+    official code (defaults: 6 s, 2 s, 20 s).
+
+    Args:
+        intervalles: list of (start, end) detections, in seconds.
+
+    Returns:
+        list of (start, end) sequences, rounded to 0.01 s.
+    """
+    sequences = []
+    current = []
+    previous_end = None
+
+    def close():
+        if not current:
+            return
+        start, end = current[0][0], max(fin for _, fin in current)
+        if end - start >= min_duration:
+            sequences.append((round(start, 2), round(end, 2)))
+
+    for debut, fin in sorted(intervalles):
+        new_group = previous_end is not None and (debut - previous_end) >= max_gap
+        if current and not new_group:
+            new_group = max(fin, max(f for _, f in current)) - current[0][0] > max_duration
+        if new_group:
+            close()
+            current = []
+        current.append((debut, fin))
+        previous_end = fin
+    close()
+    return sequences
 
 
 def trouver_fichier_video(fichier_csv, dossier_videos="/media/DOLPHIN/2023/"):
@@ -596,6 +672,85 @@ def load_audio(file_path):
         if x.ndim > 1:
             x = x[:, 0]
     return fs, x
+
+
+def prepare_audio(x, fs, settings=PAPER_SPECTROGRAM):
+    """
+    Put a loaded signal in the form the spectrogram code expects: mono float32
+    in [-1, 1], resampled to ``settings.target_fs`` when the rates differ.
+
+    Returns:
+        (fs, x)
+    """
+    x = np.asarray(x)
+    if x.ndim > 1:
+        x = x[:, 0]
+    if np.issubdtype(x.dtype, np.integer):
+        if x.dtype == np.uint8:  # 8-bit WAV files are unsigned
+            x = (x.astype(np.float32) - 128.0) / 128.0
+        else:
+            x = x.astype(np.float32) / float(2 ** (8 * x.dtype.itemsize - 1))
+    else:
+        x = x.astype(np.float32)
+
+    if settings.target_fs is not None and int(fs) != int(settings.target_fs):
+        try:
+            import librosa
+        except ImportError as exc:
+            raise ImportError(f"librosa is required to resample audio from {fs} Hz to "
+                              f"{settings.target_fs} Hz.") from exc
+        x = np.asarray(librosa.resample(x, orig_sr=int(fs), target_sr=int(settings.target_fs)), dtype=np.float32)
+        fs = int(settings.target_fs)
+    return int(fs), x
+
+
+def spectrogram_image(samples, fs, settings=PAPER_SPECTROGRAM, size=(224, 224)):
+    """
+    Spectrogram image of one audio window, as fed to the detector.
+
+    Log-power spectrogram, min-max normalised to 0-255 over the whole spectrum,
+    cropped to the frequency band (low frequencies at the bottom) and resized
+    with nearest-neighbour interpolation. With the paper settings this
+    reproduces the images of the OpenWhistle-CNN dataset pixel for pixel.
+
+    Args:
+        samples: 1-D float32 signal (see :func:`prepare_audio`).
+        size: (width, height) of the image, used when ``settings.image_size`` is None.
+
+    Returns:
+        uint8 array of shape (height, width, 3).
+    """
+    import cv2
+
+    f, _, sxx = spectrogram(samples, fs, nperseg=settings.wlen, noverlap=settings.noverlap, nfft=settings.nfft,
+                            window=blackman(settings.wlen, sym=False), scaling='density', mode='psd')
+    sxx = 10.0 * np.log10(np.abs(sxx) + 1e-19)
+    sxx = (sxx - np.min(sxx)) / (np.max(sxx) - np.min(sxx) + 1e-12) * 255.0
+
+    low_idx = np.searchsorted(f, settings.cut_low_frequency * 1000)
+    high_idx = np.searchsorted(f, settings.cut_high_frequency * 1000)
+    gray = np.clip(np.flipud(sxx[low_idx:high_idx, :]), 0, 255).astype(np.uint8)
+
+    width, height = settings.image_size or size
+    resized = cv2.resize(gray, (int(width), int(height)), interpolation=cv2.INTER_NEAREST)
+    return np.stack([resized, resized, resized], axis=2)
+
+
+def window_starts(n_samples, fs, settings=PAPER_SPECTROGRAM, start_time=0.0, end_time=None):
+    """
+    Start sample of every complete window between ``start_time`` and ``end_time`` (seconds).
+
+    Returns:
+        (starts, samples_per_window): 1-D integer array and the window length in samples.
+    """
+    samples_per_window = round(settings.window_duration * fs)
+    hop = round(settings.window_hop * fs)
+    first = round(start_time * fs)
+    last = n_samples if end_time is None else min(n_samples, round(end_time * fs))
+    if last - first < samples_per_window:
+        return np.array([], dtype=np.int64), samples_per_window
+    count = 1 + (last - first - samples_per_window) // hop
+    return first + hop * np.arange(count, dtype=np.int64), samples_per_window
 
 
 def audio_to_spectrogram_images(x, fs, file_name="audio", saving_folder="./images", batch_size=50,

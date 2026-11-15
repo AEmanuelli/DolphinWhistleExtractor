@@ -4,13 +4,18 @@ Dolphin Whistle Detection and Extraction Tool
 
 Detects dolphin whistles in audio recordings (.wav / .flac) with a pre-trained
 neural network and, optionally, extracts the detected segments as audio clips.
+By default the processing follows the OpenWhistle paper (arXiv:2609.34839):
+non-overlapping 0.4 s windows, 2-22 kHz spectrograms, sequences of 2-20 s.
 
 Examples:
     # Detect whistles in a folder of recordings (model defaults to models/base_MobileNetV2.keras)
     python main.py --recordings /path/to/recordings --saving_folder /path/to/output --save_p
 
-    # Custom frequency band, whole recordings, then extract the detected whistles as .wav clips
-    python main.py --recordings rec/ --saving_folder out/ --CLF 5 --CHF 25 --end_time -1 --extract
+    # Whole recordings, then extract the detected whistle sequences as .wav clips
+    python main.py --recordings rec/ --saving_folder out/ --end_time -1 --extract
+
+    # The VGG16 detector published with the paper (PyTorch checkpoint)
+    python main.py --recordings rec/ --saving_folder out/ --model_path model_vgg_final_best.pt
 
     # Only process the files listed (one name per line) in a text file
     python main.py --recordings rec/ --saving_folder out/ --specific_files file_list.txt
@@ -26,6 +31,8 @@ import os
 import sys
 
 from predict_and_extract_online import DEFAULT_MODEL_PATH, process_predict_extract
+from process_predictions import DEFAULT_MAX_DURATION, DEFAULT_MAX_GAP, DEFAULT_MIN_DURATION
+from utils import SPECTROGRAM_PRESETS
 
 CONFIG_PATH = os.path.expanduser("~/.predict_extract_config.json")
 
@@ -69,7 +76,7 @@ def build_parser(config=None):
 
     # Model and path parameters
     parser.add_argument('--model_path', default=DEFAULT_MODEL_PATH,
-                        help='Path to the trained model file')
+                        help="Keras model (.keras / .h5) or PyTorch checkpoint of the paper's VGG16 (.pt)")
     parser.add_argument('--recordings', default=config.get("recordings"),
                         required=not config.get("recordings"),
                         help='Path to recordings folder')
@@ -90,10 +97,14 @@ def build_parser(config=None):
                         help='Minimum model score for a window to count as a whistle')
 
     # Frequency filtering parameters
-    parser.add_argument('--CLF', type=int, default=3,
-                        help='Cut low frequency (kHz)')
-    parser.add_argument('--CHF', type=int, default=20,
-                        help='Cut high frequency (kHz)')
+    parser.add_argument('--spectrogram', choices=sorted(SPECTROGRAM_PRESETS), default='paper',
+                        help='"paper": non-overlapping 0.4 s windows, 1024-point FFT with hop 512, 2-22 kHz '
+                             '(arXiv:2609.34839). "legacy": 0.8 s windows every 0.4 s, 2048-point FFT, 3-20 kHz '
+                             '(for models trained on the older images)')
+    parser.add_argument('--CLF', type=float, default=None,
+                        help='Cut low frequency in kHz (default: 2 for "paper", 3 for "legacy")')
+    parser.add_argument('--CHF', type=float, default=None,
+                        help='Cut high frequency in kHz (default: 22 for "paper", 20 for "legacy")')
 
     # File selection parameter
     parser.add_argument('--specific_files',
@@ -108,13 +119,19 @@ def build_parser(config=None):
                         help='After detection, extract the detected whistles as audio clips')
     parser.add_argument('--extract_folder',
                         help='Folder receiving the audio clips (default: <saving_folder>/extracted_audio)')
+    parser.add_argument('--max_gap', type=float, default=DEFAULT_MAX_GAP,
+                        help='--extract: detections closer than this many seconds form one sequence')
+    parser.add_argument('--min_duration', type=float, default=DEFAULT_MIN_DURATION,
+                        help='--extract: sequences shorter than this many seconds are dropped')
+    parser.add_argument('--max_duration', type=float, default=DEFAULT_MAX_DURATION,
+                        help='--extract: longer runs of detections are split into sequences of at most this many seconds')
 
     # Processing options
     parser.add_argument('--image_norm', action='store_true',
                         help='Normalize spectrograms by dividing by 255 (only for models trained on '
                              'normalized images; the models bundled in models/ need raw images)')
 
-    parser.add_argument('--version', action='version', version='%(prog)s 1.1.0')
+    parser.add_argument('--version', action='version', version='%(prog)s 2.0.0')
     return parser
 
 
@@ -130,8 +147,13 @@ def main(argv=None):
         parser.error(f"Model file not found at '{args.model_path}'")
     if not os.path.isdir(args.recordings):
         parser.error(f"Recordings folder not found at '{args.recordings}'")
-    if args.CLF >= args.CHF:
+    preset = SPECTROGRAM_PRESETS[args.spectrogram]
+    low = preset.cut_low_frequency if args.CLF is None else args.CLF
+    high = preset.cut_high_frequency if args.CHF is None else args.CHF
+    if low >= high:
         parser.error("--CLF must be lower than --CHF")
+    if args.max_duration < args.min_duration:
+        parser.error("--max_duration must not be lower than --min_duration")
 
     specific_files = None
     if args.specific_files:
@@ -159,6 +181,7 @@ def main(argv=None):
         binary_threshold=args.threshold,
         max_workers=args.max_workers,
         specific_files=specific_files,
+        spectrogram=args.spectrogram,
     )
 
     failed = sorted(name for name, count in results.items() if count is None)
@@ -169,7 +192,8 @@ def main(argv=None):
         from process_predictions import process_prediction_files_in_folder
         process_prediction_files_in_folder(
             args.saving_folder, args.recordings, max_workers=args.max_workers or 4,
-            audio_only=True, exit=args.extract_folder)
+            audio_only=True, exit=args.extract_folder, max_gap=args.max_gap,
+            min_duration=args.min_duration, max_duration=args.max_duration)
         print("Extraction completed.")
 
     if failed:

@@ -10,22 +10,28 @@ Each window can be shown to the model in two ways:
 * ``--source dataset``  : the 224x224 spectrogram image shipped with the dataset;
 * ``--source pipeline`` : the spectrogram computed from the audio window by this
   repository's own pipeline (``Predict_and_extract/utils.py``), i.e. what the
-  model actually sees when ``main.py`` or the GUI is used.
+  model actually sees when ``main.py`` or the GUI is used. With the default
+  "paper" settings both are the same images (up to one grey level on a few pixels).
 
-Comparing both tells whether the scores measured on a spectrogram dataset carry
-over to the detection pipeline.
+Models can be Keras files (.keras / .h5) or the PyTorch VGG16 checkpoint of the
+paper (.pt, https://huggingface.co/dolphinteam/OpenWhistle-CNN-VGG16).
 
 Examples:
     # all models of models/, test split, dataset spectrograms
     python Train_model/evaluate_models.py
 
+    # the detector published with the paper
+    python Train_model/evaluate_models.py --models model_vgg_final_best.pt
+
     # one model, pipeline spectrograms, quick run on 2000 windows
     python Train_model/evaluate_models.py --models models/base_MobileNetV2.keras --source pipeline --limit 2000
 
-Requires: tensorflow, pyarrow, pillow, scikit-learn (plus the pipeline requirements).
+Requires: pyarrow, pillow, scikit-learn, and tensorflow and/or torch + torchvision
+(plus the pipeline requirements).
 """
 import argparse
 import csv
+import dataclasses
 import glob
 import io
 import os
@@ -61,18 +67,18 @@ def download_split(split, cache_dir):
     return paths
 
 
-def pipeline_image(wav_bytes, overlap, cut_low_frequency, cut_high_frequency):
-    """Spectrogram of one audio window, computed like the detection pipeline does."""
+def pipeline_image(wav_bytes, settings):
+    """Spectrogram of one audio clip, computed like the detection pipeline does (the whole clip is one window)."""
     import utils
     from scipy.io import wavfile
 
     fs, x = wavfile.read(io.BytesIO(wav_bytes))
-    return utils.audio_to_spectrogram_images(
-        x, fs, end_time=None, batch_size=1, window_duration=len(x) / fs, stft_overlap=overlap,
-        cut_low_frequency=cut_low_frequency, cut_high_frequency=cut_high_frequency)[0]
+    fs, x = utils.prepare_audio(x, fs, settings)
+    settings = dataclasses.replace(settings, window_duration=len(x) / fs)
+    return utils.spectrogram_image(x, fs, settings)
 
 
-def load_examples(paths, source, limit, overlap, cut_low_frequency, cut_high_frequency, seed=0):
+def load_examples(paths, source, limit, settings, seed=0):
     """Return (images uint8 [n, 224, 224], labels, recordings) for a split."""
     import cv2
     import pyarrow.parquet as pq
@@ -96,26 +102,33 @@ def load_examples(paths, source, limit, overlap, cut_low_frequency, cut_high_fre
                 if source == "dataset":
                     image = np.array(Image.open(io.BytesIO(row["spectrogram"]["bytes"])).convert("L"))
                 else:
-                    image = pipeline_image(row["audio"]["bytes"], overlap, cut_low_frequency, cut_high_frequency)
-                    image = cv2.resize(image, (224, 224))[..., 0]
+                    image = cv2.resize(pipeline_image(row["audio"]["bytes"], settings), (224, 224))[..., 0]
                 images.append(image)
                 labels.append(row["label"])
                 recordings.append(row["recording"])
     return np.array(images), np.array(labels), np.array(recordings)
 
 
-def predict(model, images, scale, batch_size=128):
-    """Whistle score of every image (grayscale uint8 -> 3 channels -> model)."""
-    height, width = model.input_shape[1] or 224, model.input_shape[2] or 224
+def predict(detector, images, scale="raw", batch_size=64):
+    """
+    Whistle score of every image (grayscale uint8 [n, h, w] -> 3 channels -> detector).
+
+    ``detector`` exposes ``predict(batch) -> np.ndarray`` and ``image_size`` (width, height),
+    like the detectors of ``predict_and_extract_online``.
+    """
+    import cv2
+    from predict_and_extract_online import positive_scores
+
+    width, height = detector.image_size
+    if getattr(detector, "handles_normalization", False):
+        scale = "raw"  # the detector normalises 0-255 images itself
     scores = []
     for i in range(0, len(images), batch_size):
-        batch = np.repeat(images[i:i + batch_size, ..., np.newaxis], 3, axis=3).astype(np.float32)
-        if (height, width) != batch.shape[1:3]:
-            import cv2
+        batch = images[i:i + batch_size]
+        if batch.shape[1:3] != (height, width):
             batch = np.array([cv2.resize(image, (width, height)) for image in batch])
-        output = np.asarray(model(SCALES[scale](batch), training=False))
-        # single sigmoid output, or class 1 of a two-class output
-        scores.append(output[:, 0] if output.shape[1] == 1 else output[:, 1])
+        batch = np.repeat(batch[..., np.newaxis], 3, axis=3).astype(np.float32)
+        scores.append(positive_scores(detector.predict(SCALES[scale](batch)), 0.5)[1])
     return np.concatenate(scores)
 
 
@@ -155,16 +168,16 @@ def accuracy_interval(labels, scores, recordings, threshold=0.5, n_boot=1000, se
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--models", nargs="+", help="Model files (default: every .keras / .h5 file of models/)")
+    parser.add_argument("--models", nargs="+",
+                        help="Model files: Keras (.keras / .h5) or PyTorch checkpoint of the paper's VGG16 (.pt). "
+                             "Default: every Keras model of models/")
     parser.add_argument("--split", choices=sorted(SPLIT_SHARDS), default="test")
     parser.add_argument("--source", choices=["dataset", "pipeline"], default="dataset",
                         help="Spectrograms shipped with the dataset, or recomputed by this repository's pipeline")
     parser.add_argument("--scale", choices=sorted(SCALES), default="raw",
                         help="Pixel scaling fed to the model (div255 = pipeline option --image_norm)")
-    parser.add_argument("--overlap", type=float, default=None,
-                        help="STFT overlap fraction for --source pipeline (default: the pipeline's own value)")
-    parser.add_argument("--CLF", type=int, default=3, help="Cut low frequency (kHz), --source pipeline")
-    parser.add_argument("--CHF", type=int, default=20, help="Cut high frequency (kHz), --source pipeline")
+    parser.add_argument("--spectrogram", choices=["paper", "legacy"], default="paper",
+                        help="Spectrogram settings for --source pipeline (see Predict_and_extract/utils.py)")
     parser.add_argument("--threshold", type=float, default=0.5)
     parser.add_argument("--limit", type=int, default=0, help="Evaluate a random subset of this many windows")
     parser.add_argument("--cache_dir", default=os.path.join(REPO_ROOT, "openwhistle_cnn_cache"),
@@ -178,21 +191,18 @@ def main(argv=None):
         parser.error("No model found")
 
     import utils
-    overlap = utils.STFT_OVERLAP if args.overlap is None else args.overlap
+    from predict_and_extract_online import load_detector
+    settings = utils.SPECTROGRAM_PRESETS[args.spectrogram]
 
     paths = download_split(args.split, args.cache_dir)
     print(f"Preparing {args.source} spectrograms of the {args.split} split ...")
-    images, labels, recordings = load_examples(paths, args.source, args.limit, overlap, args.CLF, args.CHF)
+    images, labels, recordings = load_examples(paths, args.source, args.limit, settings)
     print(f"{len(labels)} windows ({int((labels == 1).sum())} whistle, {int((labels == 0).sum())} noise) "
           f"from {len(set(recordings))} recordings")
 
-    os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "3")
-    import tensorflow as tf
-
     rows = []
     for model_path in model_paths:
-        model = tf.keras.models.load_model(model_path, compile=False)
-        scores = predict(model, images, args.scale)
+        scores = predict(load_detector(model_path), images, args.scale)
         metrics = compute_metrics(labels, scores, args.threshold)
         low, high = accuracy_interval(labels, scores, recordings, args.threshold)
         name = os.path.splitext(os.path.basename(model_path))[0]
@@ -200,7 +210,7 @@ def main(argv=None):
               f"precision {metrics['precision']:.4f}, recall {metrics['recall']:.4f}, "
               f"specificity {metrics['specificity']:.4f}, F1 {metrics['f1']:.4f}, ROC AUC {metrics['roc_auc']:.4f}")
         rows.append({"model": name, "split": args.split, "source": args.source, "scale": args.scale,
-                     "stft_overlap": overlap if args.source == "pipeline" else "",
+                     "spectrogram": args.spectrogram if args.source == "pipeline" else "dataset",
                      "threshold": args.threshold, **metrics, "accuracy_ci_low": low, "accuracy_ci_high": high})
 
     if args.output_csv:
