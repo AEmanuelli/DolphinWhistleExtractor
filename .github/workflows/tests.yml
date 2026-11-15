@@ -16,6 +16,6 @@ jobs:
           cache: pip
       - name: Install test dependencies
         # The tests use a fake model: TensorFlow and the GUI/video stack are not needed.
-        run: pip install "numpy<2" scipy pandas opencv-python-headless tqdm soundfile pytest
+        run: pip install "numpy<2" scipy pandas opencv-python-headless tqdm soundfile scikit-learn pytest
       - name: Run tests
         run: python -m pytest -q

@@ -21,6 +21,9 @@ from scipy.signal.windows import blackman
 # hop (s) between two consecutive windows. The models were trained with these.
 WINDOW_DURATION = 0.8
 WINDOW_HOP = 0.4
+# Fraction of the FFT window shared by two consecutive FFT frames of a spectrogram.
+# 0.2 reproduces the original MATLAB script (Train_model/Create_dataset/save_spectrogram.m).
+STFT_OVERLAP = 0.2
 AUDIO_EXTENSIONS = (".wav", ".flac")
 
 # =============================================================================
@@ -598,18 +601,25 @@ def load_audio(file_path):
 def audio_to_spectrogram_images(x, fs, file_name="audio", saving_folder="./images", batch_size=50,
                                 start_time=0, end_time=3, save=False, wlen=2048, nfft=2048,
                                 sliding_w=WINDOW_HOP, cut_low_frequency=3, cut_high_frequency=20,
-                                target_width_px=1167, target_height_px=875):
+                                target_width_px=1167, target_height_px=875,
+                                window_duration=None, stft_overlap=None):
     """
     Turn an already loaded signal into spectrogram images.
 
-    Each image covers ``WINDOW_DURATION`` seconds of audio; consecutive images
-    start ``sliding_w`` seconds apart. See :func:`process_audio_file` for the
-    description of the parameters.
+    Each image covers ``window_duration`` seconds of audio (default
+    ``WINDOW_DURATION``); consecutive images start ``sliding_w`` seconds apart.
+    ``stft_overlap`` is the fraction of the FFT window shared by consecutive
+    FFT frames (default ``STFT_OVERLAP``). See :func:`process_audio_file` for
+    the other parameters.
     """
     import cv2
 
+    if window_duration is None:
+        window_duration = WINDOW_DURATION
+    if stft_overlap is None:
+        stft_overlap = STFT_OVERLAP
     win = blackman(wlen, sym=False)
-    hop = round(0.8 * wlen)  # window hop size
+    noverlap = wlen - round((1 - stft_overlap) * wlen)  # samples shared by consecutive FFT frames
 
     if save:
         os.makedirs(saving_folder, exist_ok=True)
@@ -620,7 +630,7 @@ def audio_to_spectrogram_images(x, fs, file_name="audio", saving_folder="./image
         N = min(N, int(end_time * fs))
     low = int(start_time * fs)
     new_samples_per_slice = int(sliding_w * fs)
-    samples_per_slice = int(WINDOW_DURATION * fs)
+    samples_per_slice = int(window_duration * fs)
 
     low_idx = high_idx = None
     for _ in range(batch_size):
@@ -628,7 +638,7 @@ def audio_to_spectrogram_images(x, fs, file_name="audio", saving_folder="./image
             break
 
         x_w = x[low:low + samples_per_slice]
-        f, t, Sxx = spectrogram(x_w, fs, nperseg=wlen, noverlap=wlen-hop, nfft=nfft, window=win, scaling='density', mode='psd')
+        f, t, Sxx = spectrogram(x_w, fs, nperseg=wlen, noverlap=noverlap, nfft=nfft, window=win, scaling='density', mode='psd')
         # Convert to dB scale
         Sxx = 10 * np.log10(np.abs(Sxx) + 1e-19)
         # Normalize Sxx to 0-255 (a perfectly flat slice, e.g. digital silence, maps to black)

@@ -88,7 +88,7 @@ Main options:
 | `--start_time` / `--end_time` | `0` / `1800` | Portion of each recording to analyse, in seconds (`--end_time -1`: whole file) |
 | `--CLF` / `--CHF` | `3` / `20` | Frequency band (kHz) shown in the spectrograms |
 | `--threshold` | `0.5` | Minimum score for a window to count as a whistle |
-| `--image_norm` | off | Divide images by 255 (only for models trained on normalized images) |
+| `--image_norm` | off | Divide images by 255. Only for models trained on normalized images: **not** the bundled ones |
 | `--save_p` / `--save` | off | Save positive / all spectrogram images |
 | `--extract` | off | Cut the detected whistles out of the recordings (audio clips) |
 | `--specific_files` | – | Text file listing the recordings to process (one name per line) |
@@ -132,7 +132,7 @@ A recording that fails (e.g. corrupted file) gets no CSV and is retried on the n
 │   ├── GUIs/                       # inference GUI + model testing / comparison GUIs
 │   ├── Extraction_with_kaggle/     # notebooks & scripts to run the pipeline on Kaggle
 │   └── ...                         # research scripts (see note below)
-├── Train_model/                    # dataset creation and training scripts / notebooks
+├── Train_model/                    # dataset creation, training scripts / notebooks, evaluate_models.py
 ├── Models_vs_years_comparison/     # comparison of the models across recording years
 ├── tests/                          # pytest suite
 └── requirements.txt
@@ -141,6 +141,51 @@ A recording that fails (e.g. corrupted file) gets no CSV and is retried on the n
 > **Note** — `maintenance.py`, `Show_newly_detected_stuff.py`, `prepare_audio.py`, `test.py`, `predict_online.py`
 > and the `Train_model/` scripts are research scripts kept for reference: they contain paths specific to the
 > original analysis machines and must be adapted before use.
+
+## 📊 Model evaluation
+
+The bundled models were evaluated on the **test split of the public
+[OpenWhistle-CNN](https://huggingface.co/datasets/dolphinteam/OpenWhistle-CNN) benchmark**: 16,708 windows of 0.4 s
+(8,354 whistle / 8,354 noise) from 261 recordings of 2019-2020, session-disjoint from its train/validation splits.
+Threshold 0.5, raw 0-255 images; the 95% interval of the accuracy resamples whole recordings.
+
+| Model | Accuracy (95% CI) | Recall | Specificity | ROC AUC |
+|---|---|---|---|---|
+| `base_MobileNetV2` (default) | **97.9%** (97.5-98.2) | 97.7% | 98.0% | 0.993 |
+| `base_EfficientNetB0` | 95.0% (94.5-95.4) | 92.2% | 97.7% | 0.978 |
+| `base_mobilenetv2_best_val_loss` | 94.5% (94.0-94.9) | 93.0% | 95.9% | 0.972 |
+
+Reproduce with:
+
+```bash
+pip install pyarrow            # in addition to requirements.txt
+python Train_model/evaluate_models.py                     # spectrograms shipped with the dataset
+python Train_model/evaluate_models.py --source pipeline   # spectrograms recomputed by this repository
+```
+
+What the evaluation showed:
+
+- **Do not use `--image_norm` with the bundled models.** They expect raw 0-255 images; with images divided by 255
+  the three of them predict "noise" for every window (recall 0%, accuracy 50%).
+- **The scores depend on how the spectrogram is computed.** Feeding the same 0.4 s windows through this repository's
+  spectrogram code (`--source pipeline`) gives the figures below. The dataset images are matched by an STFT overlap
+  of 80%; the detection pipeline uses 20% (as the original MATLAB script), on 0.8 s windows.
+
+  | Spectrogram fed to the model | `base_MobileNetV2` | `base_EfficientNetB0` | `base_mobilenetv2_best_val_loss` |
+  |---|---|---|---|
+  | Shipped with the dataset (0.4 s) | 97.9% | 95.0% | 94.5% |
+  | Repository code, 0.4 s window, 80% overlap | 97.6% | 95.3% | 95.3% |
+  | Repository code, 0.4 s window, 20% overlap | 66.1% | 81.8% | 88.5% |
+  | Pipeline setting: 0.8 s window, 20% overlap\* | 94.3% | 93.8% | 91.0% |
+  | 0.8 s window, 80% overlap\* | 96.5% | 89.7% | 90.1% |
+
+  \* The benchmark has no 0.8 s windows: these rows use 4,000 synthetic windows made of a test window followed or
+  preceded by a noise window of the same recording, so they are indicative only.
+
+  In short, the detection pipeline (0.8 s windows) is expected to score a few points below the benchmark figures,
+  and the models work best on 0.4 s windows rendered with 80% overlap, the format of the benchmark images.
+- The benchmark tells nothing about which data each bundled model was trained on; if a model was trained on
+  recordings of 2019-2020, its figures above are optimistic.
 
 ## 🧪 Tests
 

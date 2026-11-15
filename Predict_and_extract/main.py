@@ -111,8 +111,8 @@ def build_parser(config=None):
 
     # Processing options
     parser.add_argument('--image_norm', action='store_true',
-                        help='Normalize spectrograms by dividing by 255 '
-                             '(required by models trained on normalized images)')
+                        help='Normalize spectrograms by dividing by 255 (only for models trained on '
+                             'normalized images; the models bundled in models/ need raw images)')
 
     parser.add_argument('--version', action='version', version='%(prog)s 1.1.0')
     return parser
