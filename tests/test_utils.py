@@ -149,8 +149,22 @@ def test_prepare_audio_scales_and_selects_first_channel():
     assert fs == 96000 and x.dtype == np.float32
     assert x.tolist() == [0.5, -1.0]
 
-    fs, x = utils.prepare_audio(np.array([0.25, -0.5]), 48000, utils.LEGACY_SPECTROGRAM)  # no target rate
+    fs, x = utils.prepare_audio(np.array([0.25, -0.5]), 48000, utils.SpectrogramSettings(target_fs=None))
     assert fs == 48000 and x.dtype == np.float32 and x.tolist() == [0.25, -0.5]
+
+    # legacy settings: native samples, no resampling
+    fs, x = utils.prepare_audio(stereo, 48000, utils.LEGACY_SPECTROGRAM)
+    assert fs == 48000 and x.dtype == np.int16 and x.tolist() == [16384, -32768]
+
+
+def test_legacy_settings_reproduce_the_previous_pipeline(wav_file):
+    """`--spectrogram legacy` gives the images this repository produced before following the paper."""
+    previous = utils.process_audio_file(str(wav_file), start_time=0, end_time=None, batch_size=50)
+    fs, x = utils.prepare_audio(*reversed(utils.load_audio(str(wav_file))), utils.LEGACY_SPECTROGRAM)
+    starts, size = utils.window_starts(len(x), fs, utils.LEGACY_SPECTROGRAM)
+    assert len(starts) == len(previous) == 9
+    for low, expected in zip(starts, previous):
+        assert np.array_equal(utils.spectrogram_image(x[low:low + size], fs, utils.LEGACY_SPECTROGRAM), expected)
 
 
 def test_prepare_audio_resamples_to_target_rate():
@@ -175,9 +189,10 @@ def test_window_starts():
 def test_spectrogram_image_sizes_and_silence():
     fs, x = utils.prepare_audio(make_signal(duration=0.8), SAMPLE_RATE)
     assert utils.spectrogram_image(x[:38400], fs, size=(100, 60)).shape == (60, 100, 3)
-    legacy = utils.spectrogram_image(x, fs, utils.LEGACY_SPECTROGRAM)
+    legacy = utils.spectrogram_image(make_signal(duration=0.8), fs, utils.LEGACY_SPECTROGRAM)
     assert legacy.shape == (875, 1167, 3) and legacy.dtype == np.uint8
     assert not utils.spectrogram_image(np.zeros(38400, dtype=np.float32), fs).any()
+    assert not utils.spectrogram_image(np.zeros(76800, dtype=np.int16), fs, utils.LEGACY_SPECTROGRAM).any()
 
 
 def test_build_sequences_paper_rule():

@@ -41,6 +41,10 @@ class SpectrogramSettings:
     cut_high_frequency: float = 22.0    # kHz
     target_fs: Optional[int] = 96000    # recordings at another rate are resampled (None: never)
     image_size: Optional[Tuple[int, int]] = None  # (width, height); None: the model input size
+    # True: samples are scaled to [-1, 1] before the spectrogram, as in the paper. This matters because
+    # the 1e-19 floor added before the logarithm sets the darkest level, hence the contrast of the image.
+    # False: native sample values (e.g. int16), as this repository did before following the paper.
+    float_audio: bool = True
 
     @property
     def noverlap(self) -> int:
@@ -54,7 +58,7 @@ PAPER_SPECTROGRAM = SpectrogramSettings()
 # Use them with models trained on such images (e.g. the older VGG .h5 models).
 LEGACY_SPECTROGRAM = SpectrogramSettings(window_duration=0.8, window_hop=0.4, wlen=2048, nfft=2048,
                                          stft_overlap=0.2, cut_low_frequency=3.0, cut_high_frequency=20.0,
-                                         target_fs=None, image_size=(1167, 875))
+                                         target_fs=None, image_size=(1167, 875), float_audio=False)
 SPECTROGRAM_PRESETS = {"paper": PAPER_SPECTROGRAM, "legacy": LEGACY_SPECTROGRAM}
 
 # Legacy constants, used by the legacy helpers `process_audio_file` / `audio_to_spectrogram_images`.
@@ -676,8 +680,9 @@ def load_audio(file_path):
 
 def prepare_audio(x, fs, settings=PAPER_SPECTROGRAM):
     """
-    Put a loaded signal in the form the spectrogram code expects: mono float32
-    in [-1, 1], resampled to ``settings.target_fs`` when the rates differ.
+    Put a loaded signal in the form the spectrogram code expects: mono, and
+    with the paper settings float32 in [-1, 1], resampled to
+    ``settings.target_fs`` when the rates differ.
 
     Returns:
         (fs, x)
@@ -685,6 +690,8 @@ def prepare_audio(x, fs, settings=PAPER_SPECTROGRAM):
     x = np.asarray(x)
     if x.ndim > 1:
         x = x[:, 0]
+    if not settings.float_audio:
+        return int(fs), x
     if np.issubdtype(x.dtype, np.integer):
         if x.dtype == np.uint8:  # 8-bit WAV files are unsigned
             x = (x.astype(np.float32) - 128.0) / 128.0
@@ -714,7 +721,7 @@ def spectrogram_image(samples, fs, settings=PAPER_SPECTROGRAM, size=(224, 224)):
     reproduces the images of the OpenWhistle-CNN dataset pixel for pixel.
 
     Args:
-        samples: 1-D float32 signal (see :func:`prepare_audio`).
+        samples: 1-D signal prepared by :func:`prepare_audio`.
         size: (width, height) of the image, used when ``settings.image_size`` is None.
 
     Returns:
@@ -725,7 +732,13 @@ def spectrogram_image(samples, fs, settings=PAPER_SPECTROGRAM, size=(224, 224)):
     f, _, sxx = spectrogram(samples, fs, nperseg=settings.wlen, noverlap=settings.noverlap, nfft=settings.nfft,
                             window=blackman(settings.wlen, sym=False), scaling='density', mode='psd')
     sxx = 10.0 * np.log10(np.abs(sxx) + 1e-19)
-    sxx = (sxx - np.min(sxx)) / (np.max(sxx) - np.min(sxx) + 1e-12) * 255.0
+    value_range = np.max(sxx) - np.min(sxx)
+    if settings.float_audio:
+        sxx = (sxx - np.min(sxx)) / (value_range + 1e-12) * 255.0  # formula of the official code
+    elif value_range > 0:
+        sxx = (sxx - np.min(sxx)) / value_range * 255.0
+    else:
+        sxx = np.zeros_like(sxx)
 
     low_idx = np.searchsorted(f, settings.cut_low_frequency * 1000)
     high_idx = np.searchsorted(f, settings.cut_high_frequency * 1000)
