@@ -160,7 +160,14 @@ Two different "overlaps" must not be confused:
   what creates near-duplicate images. If such windows are split at random, the same piece of whistle ends up in
   both the training and the evaluation set and the score is inflated.
 
-Checked on the published dataset (`artifacts/openwhistle_simple_metadata.csv`, 76,516 windows):
+Checked on the published dataset (76,516 windows) with `Train_model/check_dataset_overlap.py`, in two
+independent ways:
+
+1. **from the metadata** (`artifacts/openwhistle_simple_metadata.csv`): windows of the same recording whose
+   time intervals intersect, and sessions present in several splits;
+2. **from the audio itself**, without trusting any metadata: windows cut from the same stretch of a recording
+   contain an identical run of samples, which is found by fingerprinting short runs of samples at positions chosen
+   from the signal (so the match does not depend on where the audio sits in each window).
 
 | Check | Result |
 |---|---|
@@ -168,16 +175,25 @@ Checked on the published dataset (`artifacts/openwhistle_simple_metadata.csv`, 7
 | Sessions shared (channels of one recording count as one session) | 0 |
 | Calendar days shared between train and test, validation and test | 0 (test is 2019–2020, the rest 2021–2024) |
 | Calendar days shared between train and validation | 14 (different sessions of the same day) |
-| Windows overlapping in time across two splits | 0 |
-| Windows overlapping another window of the same split | test 614 (3.7 %), train 192 (0.4 %), validation 28 (0.5 %) |
+| Windows whose time intervals intersect across two splits (metadata) | 0 |
+| Windows containing the same audio across two splits (audio) | 0 |
+| Pairs of windows containing the same audio inside one split (audio) | test 308, train 0, validation 0 |
+
+The two methods agree: all the overlaps of at least 0.05 s announced by the metadata (246 pairs, all in the test
+split) are found in the audio, and the audio contains no overlap that the metadata does not announce.
+
+```bash
+python Train_model/check_dataset_overlap.py --metadata_only   # a few seconds
+python Train_model/check_dataset_overlap.py                   # both checks, downloads the whole dataset (~6 GB)
+```
 
 So the paper does not have the leak: windows do not overlap by construction and the splits are disjoint by
 session, the test split being recorded in other years than the training data. Two minor remarks:
 
-- 3.7 % of the test windows partly overlap another test window (manually annotated whistles that are not on the
-  0.4 s grid). This is redundancy inside the test split, not leakage; it makes the test slightly less
-  informative than its size suggests, which is why `evaluate_models.py` reports an interval obtained by
-  resampling whole recordings.
+- 308 pairs of test windows share between 0.007 and 0.38 s of audio (about 3.7 % of the test windows; manually
+  annotated whistles that are not on the 0.4 s grid). This is redundancy inside the test split, not leakage; it
+  makes the test slightly less informative than its size suggests, which is why `evaluate_models.py` reports an
+  interval obtained by resampling whole recordings.
 - train and validation share 14 calendar days. This can only make the validation loss, hence early stopping,
   slightly optimistic; it does not touch the test figures.
 
