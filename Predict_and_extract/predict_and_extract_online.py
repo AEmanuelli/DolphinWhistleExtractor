@@ -97,13 +97,14 @@ class WhistleDetector:
 
 class TorchWhistleDetector:
     """
-    The VGG16 whistle detector of the OpenWhistle paper (PyTorch checkpoint).
+    A PyTorch whistle detector (checkpoint .pt / .pth).
 
-    Architecture (cnn/utils/model.py of the official code): VGG16 convolutional
-    backbone, then fully connected layers of 50 and 20 units and 2 outputs
-    (noise, whistle). Images are scaled to 0-1 and normalised with the
-    ImageNet statistics. The published weights are at
-    https://huggingface.co/dolphinteam/OpenWhistle-CNN-VGG16 (model_vgg_final_best.pt).
+    Either the VGG16 of the OpenWhistle paper (VGG16 backbone, fully connected layers
+    of 50 and 20 units, 2 outputs; weights at
+    https://huggingface.co/dolphinteam/OpenWhistle-CNN-VGG16, model_vgg_final_best.pt)
+    or a model trained with Train_model/train_openwhistle.py, whose checkpoint names its
+    architecture (see torch_models.py). Images are scaled to 0-1 and normalised with
+    the ImageNet statistics.
     """
 
     handles_normalization = True  # expects raw 0-255 images and normalises them itself
@@ -111,8 +112,7 @@ class TorchWhistleDetector:
     def __init__(self, model_path: str):
         try:
             import torch
-            from torch import nn
-            from torchvision import models
+            import torch_models
         except ImportError as exc:
             raise ImportError("PyTorch checkpoints need torch and torchvision: "
                               "pip install torch torchvision") from exc
@@ -120,32 +120,13 @@ class TorchWhistleDetector:
         if not os.path.exists(model_path):
             raise FileNotFoundError(f"Model file not found: {model_path}")
 
-        class VGG16WhistleClassifier(nn.Module):
-            def __init__(self):
-                super().__init__()
-                backbone = models.vgg16(weights=None)
-                self.features = backbone.features
-                self.avgpool = backbone.avgpool
-                self.flatten = nn.Flatten()
-                self.fc1 = nn.Linear(backbone.classifier[0].in_features, 50)
-                self.fc2 = nn.Linear(50, 20)
-                self.out = nn.Linear(20, 2)
-
-            def forward(self, x):
-                x = self.flatten(self.avgpool(self.features(x)))
-                return self.out(torch.relu(self.fc2(torch.relu(self.fc1(x)))))
-
         logger.info("Loading PyTorch checkpoint from %s", model_path)
         # weights_only: the file is only read as tensors and plain values, no code is executed
-        checkpoint = torch.load(model_path, map_location="cpu", weights_only=True)
-        state_dict = checkpoint.get("model_state_dict", checkpoint) if isinstance(checkpoint, dict) else checkpoint
-        metadata = checkpoint if isinstance(checkpoint, dict) else {}
+        model, metadata = torch_models.load_checkpoint(model_path)
 
         self._torch = torch
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        self.model = VGG16WhistleClassifier()
-        self.model.load_state_dict(state_dict)
-        self.model.to(self.device).eval()
+        self.model = model.to(self.device)
 
         size = int(metadata.get("img_size", 224) or 224)
         self.image_size = (size, size)

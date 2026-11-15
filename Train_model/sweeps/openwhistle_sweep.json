@@ -1,0 +1,13 @@
+{
+  "description": "Sweep run on a laptop GPU (GeForce 940MX, 4 GB) to beat base_MobileNetV2 (97.9% on the test split). Ordered by expected value, so a sweep stopped early still covers the most promising runs. Shared settings in 'base', each run overrides them.",
+  "base": {"pretrained": true, "epochs": 6, "batch_size": 32, "weight_decay": 1e-4, "warmup_epochs": 0.3, "patience": 3, "seed": 7},
+  "runs": [
+    {"name": "mnv2_aug", "arch": "mobilenet_v2", "lr": 3e-4, "time_shift": 0.25, "time_masks": 2, "freq_masks": 2},
+    {"name": "effb0_aug", "arch": "efficientnet_b0", "lr": 5e-4, "time_shift": 0.25, "time_masks": 2, "freq_masks": 2},
+    {"name": "mnv2_noaug", "arch": "mobilenet_v2", "lr": 3e-4},
+    {"name": "resnet18_aug", "arch": "resnet18", "lr": 3e-4, "time_shift": 0.25, "time_masks": 2, "freq_masks": 2},
+    {"name": "mnv2_aug_mixup_ls", "arch": "mobilenet_v2", "lr": 3e-4, "time_shift": 0.25, "time_masks": 2, "freq_masks": 2, "mixup": 0.2, "label_smoothing": 0.1},
+    {"name": "mnv3l_aug", "arch": "mobilenet_v3_large", "lr": 5e-4, "time_shift": 0.25, "time_masks": 2, "freq_masks": 2},
+    {"name": "mnv2_aug_lr1e-3", "arch": "mobilenet_v2", "lr": 1e-3, "time_shift": 0.25, "time_masks": 2, "freq_masks": 2, "freq_shift": 8}
+  ]
+}
