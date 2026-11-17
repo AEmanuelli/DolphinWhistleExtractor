@@ -1,0 +1,23 @@
+{
+  "description": "Two goals on OpenWhistle-CNN: (1) beat base_MobileNetV2 (97.9% test accuracy); (2) the smallest model above 95% accuracy, for real-time inference on a Raspberry Pi. Sized for about 30 h on a laptop GeForce 940MX (4 GB); early stopping shortens it. Runs are ordered so a sweep stopped early still covers both goals. Shared settings in 'base', each run overrides them. All runs use the same augmentation except the explicit ablation.",
+  "base": {"pretrained": true, "batch_size": 32, "weight_decay": 1e-4, "warmup_epochs": 0.3, "seed": 7,
+           "time_shift": 0.25, "time_masks": 2, "freq_masks": 2},
+  "runs": [
+    {"name": "tiny16_112", "arch": "tinycnn_16", "img_size": 112, "batch_size": 128, "lr": 3e-3, "epochs": 30, "patience": 6},
+    {"name": "tiny8_112", "arch": "tinycnn_8", "img_size": 112, "batch_size": 128, "lr": 3e-3, "epochs": 30, "patience": 6},
+    {"name": "tiny32_112", "arch": "tinycnn_32", "img_size": 112, "batch_size": 128, "lr": 3e-3, "epochs": 30, "patience": 6},
+    {"name": "mnv3s_112", "arch": "mobilenet_v3_small", "img_size": 112, "batch_size": 64, "lr": 1e-3, "epochs": 15, "patience": 4},
+    {"name": "mnv2_224", "arch": "mobilenet_v2", "lr": 3e-4, "epochs": 6, "patience": 3},
+    {"name": "tiny64_112", "arch": "tinycnn_64", "img_size": 112, "batch_size": 128, "lr": 3e-3, "epochs": 30, "patience": 6},
+    {"name": "tiny32_64", "arch": "tinycnn_32", "img_size": 64, "batch_size": 128, "lr": 3e-3, "epochs": 30, "patience": 6},
+    {"name": "tiny16_64", "arch": "tinycnn_16", "img_size": 64, "batch_size": 128, "lr": 3e-3, "epochs": 30, "patience": 6},
+    {"name": "tiny32_112_noaug", "arch": "tinycnn_32", "img_size": 112, "batch_size": 128, "lr": 3e-3, "epochs": 30, "patience": 6,
+     "time_shift": 0.0, "time_masks": 0, "freq_masks": 0},
+    {"name": "resnet18_224", "arch": "resnet18", "lr": 3e-4, "epochs": 6, "patience": 3},
+    {"name": "mnv3s_224", "arch": "mobilenet_v3_small", "lr": 5e-4, "epochs": 10, "patience": 4},
+    {"name": "mnv3l_224", "arch": "mobilenet_v3_large", "lr": 5e-4, "epochs": 6, "patience": 3},
+    {"name": "tiny32_224", "arch": "tinycnn_32", "batch_size": 64, "lr": 2e-3, "epochs": 20, "patience": 5},
+    {"name": "effb0_224", "arch": "efficientnet_b0", "lr": 5e-4, "epochs": 5, "patience": 3},
+    {"name": "mnv2_224_mixup_ls", "arch": "mobilenet_v2", "lr": 3e-4, "epochs": 6, "patience": 3, "mixup": 0.2, "label_smoothing": 0.1}
+  ]
+}

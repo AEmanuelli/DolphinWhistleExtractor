@@ -1,3 +1,4 @@
+import cv2
 import numpy as np
 import pandas as pd
 import pytest
@@ -96,7 +97,8 @@ def test_detector_sees_paper_spectrograms(wav_file, tmp_path, monkeypatch):
     (batch,) = detector.batches
     assert batch.shape == (10, 24, 32, 3) and batch.dtype == np.float32 and batch.max() > 1  # raw 0-255
     fs, x = utils.prepare_audio(*reversed(utils.load_audio(str(wav_file))))
-    expected = utils.spectrogram_image(x[38400:76800], fs, size=FakeDetector.image_size)
+    # drawn at the 224x224 size of the dataset images, then resized to the model input
+    expected = cv2.resize(utils.spectrogram_image(x[38400:76800], fs, size=(224, 224)), FakeDetector.image_size)
     assert np.array_equal(batch[1], expected.astype(np.float32))  # second window: 0.4-0.8 s
     assert len(list((tmp_path / "out" / wav_file.stem / "all").glob("*.jpg"))) == 10
 

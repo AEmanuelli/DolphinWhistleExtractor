@@ -151,16 +151,20 @@ the images are the same as those of the
 │   ├── GUIs/                       # inference GUI + model testing / comparison GUIs
 │   ├── Extraction_with_kaggle/     # notebooks & scripts to run the pipeline on Kaggle
 │   └── ...                         # research scripts (see note below)
-├── Train_model/                    # dataset creation, training scripts / notebooks, evaluate_models.py
+├── Train_model/
+│   ├── train_openwhistle.py        # training on OpenWhistle-CNN (PyTorch), sweeps in sweeps/
+│   ├── evaluate_models.py          # benchmark of any model on the OpenWhistle-CNN test split
+│   └── ...                         # older dataset creation / training scripts and notebooks
 ├── Models_vs_years_comparison/     # comparison of the models across recording years
-├── docs/                           # how to reproduce the OpenWhistle CNN, leakage checks
+├── docs/                           # training guide, reproduction of the OpenWhistle CNN, leakage checks
 ├── tests/                          # pytest suite
 └── requirements.txt
 ```
 
 > **Note** — `maintenance.py`, `Show_newly_detected_stuff.py`, `prepare_audio.py`, `test.py`, `predict_online.py`
-> and the `Train_model/` scripts are research scripts kept for reference: they contain paths specific to the
-> original analysis machines and must be adapted before use.
+> and the older `Train_model/` scripts (all but `train_openwhistle.py` and `evaluate_models.py`) are research
+> scripts kept for reference: they contain paths specific to the original analysis machines and must be adapted
+> before use.
 
 ## 📊 Model evaluation
 
@@ -212,6 +216,37 @@ Notes:
 
 Train / test leakage checks and the comparison with the earlier VGG article (Korkmaz et al. 2023) are in
 [docs/REPRODUCE_OPENWHISTLE_CNN.md](docs/REPRODUCE_OPENWHISTLE_CNN.md).
+
+## 🧠 Training a new model
+
+[`Train_model/train_openwhistle.py`](Train_model/train_openwhistle.py) trains whistle detectors in PyTorch on the
+public [OpenWhistle-CNN](https://huggingface.co/datasets/dolphinteam/OpenWhistle-CNN) dataset, with its
+session-disjoint splits: train (53,828 windows, 2021–2024) to fit, validation (5,980) to choose the epoch and the
+configuration, test (16,708, 2019–2020) once, for the chosen model. The dataset images are the ones the pipeline
+computes, so a trained checkpoint is used directly by `main.py` and the GUI.
+
+```bash
+pip install torch torchvision pyarrow           # in addition to requirements.txt
+python Train_model/train_openwhistle.py prepare  # download (~4 GB) and decode the dataset once
+
+# one run: ImageNet-pretrained MobileNetV2 with time shifts and SpecAugment masks
+python Train_model/train_openwhistle.py train --arch mobilenet_v2 --epochs 6 \
+    --time_shift 0.25 --time_masks 2 --freq_masks 2 --out runs/mnv2
+
+# a sweep (resumable), optionally logged to Weights & Biases, ranked on the validation split
+python Train_model/train_openwhistle.py sweep Train_model/sweeps/openwhistle_sweep.json --out runs/sweep \
+    --wandb_project openwhistle-cnn-sweep
+
+# the chosen model: test split, then detection
+python Train_model/train_openwhistle.py test runs/sweep/<run>/best.pt
+python Predict_and_extract/main.py --recordings /path/to/recordings --saving_folder out/ --model_path runs/sweep/<run>/best.pt
+```
+
+Architectures range from small CNNs trained from scratch (11 k parameters, about 1 ms per window on one CPU
+thread, for real-time detection on a Raspberry Pi) to ImageNet-pretrained MobileNet, EfficientNet and ResNet
+backbones. The sweep of the repository looks both for a model better than `base_MobileNetV2` and for the smallest
+model above 95% accuracy. Protocol, options, model sizes and training times on a laptop GPU:
+[docs/TRAINING.md](docs/TRAINING.md).
 
 ## 🧪 Tests
 
