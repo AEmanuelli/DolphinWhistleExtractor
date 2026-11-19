@@ -1,0 +1,670 @@
+<title>Revue en aveugle OpenWhistle</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<style>
+/* Layout: the same lab bench as the error review, stripped of labels and scores. Instructions first, then one card per window. */
+:root {
+  --bg: #f1f5f6;
+  --surface: #ffffff;
+  --surface-2: #e7eef1;
+  --ink: #13232e;
+  --muted: #566874;
+  --line: #d3dde2;
+  --accent: #1d5ca8;
+  --accent-ink: #ffffff;
+  --noise: #4c5d68;
+  --bad: #b2261d;
+  --unsure: #7d6400;
+  --plot-bg: #0b1418;
+  --font-body: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-data: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+  --radius: 8px;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0d151a; --surface: #142028; --surface-2: #1b2a33; --ink: #e2ebf0; --muted: #94a6b1; --line: #2a3a45;
+    --accent: #72a9ee; --accent-ink: #0d151a; --noise: #a9b9c4; --bad: #f2867c; --unsure: #e0c25a; --plot-bg: #05090b;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #0d151a; --surface: #142028; --surface-2: #1b2a33; --ink: #e2ebf0; --muted: #94a6b1; --line: #2a3a45;
+  --accent: #72a9ee; --accent-ink: #0d151a; --noise: #a9b9c4; --bad: #f2867c; --unsure: #e0c25a; --plot-bg: #05090b;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+body { background: var(--bg); color: var(--ink); font-family: var(--font-body); font-size: 15px; line-height: 1.5; }
+body::before { content: ""; position: fixed; inset: 0 0 auto; height: env(safe-area-inset-top, 0px); z-index: 10; background: var(--surface); }
+.wrap { max-width: 1320px; margin: 0 auto; padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); }
+h1, h2 { text-wrap: balance; font-weight: 600; letter-spacing: -0.01em; }
+h1 { font-size: 1.75rem; margin: 0; }
+h2 { font-size: 1.15rem; margin: 0; }
+p, ul { margin: 0; }
+.num { font-family: var(--font-data); font-variant-numeric: tabular-nums; }
+.eyebrow { font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); font-weight: 500; }
+.intro { padding-block: 28px 20px; display: grid; gap: 14px; }
+.intro .lead { max-width: 72ch; color: var(--muted); }
+.summary { display: grid; gap: 16px; grid-template-columns: minmax(0, 2fr) minmax(0, 1fr); padding-bottom: 20px; }
+@media (max-width: 900px) { .summary { grid-template-columns: minmax(0, 1fr); } }
+.panel { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 16px; display: grid; gap: 12px; align-content: start; min-width: 0; }
+.rules { padding-left: 1.2em; display: grid; gap: 6px; max-width: 72ch; }
+.rules b { font-weight: 600; }
+.small { font-size: 0.86rem; color: var(--muted); max-width: 72ch; }
+.progress { height: 6px; background: var(--surface-2); border-radius: 3px; overflow: hidden; }
+.progress i { display: block; height: 100%; background: var(--accent); width: 0; transition: width 0.3s; }
+.tally-rows { display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; font-size: 0.9rem; }
+.tally-rows span:nth-child(odd) { color: var(--muted); }
+.store-note { font-size: 0.84rem; color: var(--muted); }
+.store-note.warn { color: var(--bad); }
+.btn { font: inherit; font-size: 0.86rem; border: 1px solid var(--line); background: var(--surface); color: var(--ink); border-radius: 6px; padding: 6px 10px; cursor: pointer; }
+.btn:hover { border-color: var(--accent); }
+.btn:focus-visible, select:focus-visible, input:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.btn[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+.btn:disabled { opacity: 0.5; cursor: default; }
+.text-field { display: grid; gap: 2px; }
+.text-field label, .field label { font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); }
+.text-field input { font: inherit; font-size: 0.88rem; padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); color: var(--ink); width: 100%; }
+
+.toolbar { position: sticky; top: env(safe-area-inset-top, 0px); z-index: 5; background: var(--surface); border-block: 1px solid var(--line); }
+.toolbar .wrap { display: flex; flex-wrap: wrap; gap: 10px 14px; align-items: end; padding-block: 10px; }
+.field { display: grid; gap: 2px; min-width: 0; }
+select { font: inherit; font-size: 0.88rem; padding: 5px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); color: var(--ink); max-width: 100%; }
+.check { display: flex; align-items: center; gap: 6px; font-size: 0.88rem; padding-bottom: 5px; }
+.count { margin-left: auto; font-size: 0.88rem; color: var(--muted); padding-bottom: 5px; }
+
+.list { display: grid; gap: 16px; grid-template-columns: repeat(auto-fill, minmax(min(100%, 560px), 1fr)); padding-block: 18px 24px; }
+.card { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 14px; display: grid; gap: 12px; min-width: 0; }
+.card.done { border-color: color-mix(in srgb, var(--accent) 45%, var(--line)); }
+.card-head { display: flex; flex-wrap: wrap; gap: 6px 10px; align-items: baseline; }
+.card-head .name { font-weight: 600; }
+.card-head .name .num { font-weight: 500; }
+.status { margin-left: auto; font-size: 0.75rem; color: var(--muted); }
+.card.done .status { color: var(--accent); font-weight: 600; }
+.figs { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 10px; }
+figure { margin: 0; display: grid; gap: 4px; min-width: 0; }
+figcaption { font-size: 0.75rem; color: var(--muted); }
+.plot { display: grid; grid-template-columns: 30px minmax(0, 1fr); }
+.axis { position: relative; font-family: var(--font-data); font-size: 0.62rem; color: var(--muted); }
+.axis span { position: absolute; right: 4px; transform: translateY(-50%); white-space: nowrap; }
+.canvas-box { position: relative; aspect-ratio: 1 / 1; background: var(--plot-bg); border-radius: 4px; overflow: hidden; max-width: 100%; }
+.canvas-box canvas { width: 100%; height: 100%; display: block; }
+.canvas-box.model canvas { image-rendering: pixelated; }
+.canvas-box .loading { position: absolute; inset: 0; display: grid; place-items: center; font-size: 0.75rem; color: #9fb3bd; }
+.listen { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.listen .hint { font-size: 0.75rem; color: var(--muted); }
+.answer { display: flex; flex-wrap: wrap; gap: 6px; }
+.answer .btn { font-size: 0.92rem; padding: 7px 14px; font-weight: 500; }
+.answer .btn[data-a="whistle"][aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+.answer .btn[data-a="noise"][aria-pressed="true"] { background: var(--noise); border-color: var(--noise); color: var(--surface); }
+.answer .btn[data-a="unsure"][aria-pressed="true"] { background: var(--unsure); border-color: var(--unsure); color: var(--surface); }
+.tags { display: flex; flex-wrap: wrap; gap: 6px; }
+.tags .btn { font-size: 0.78rem; padding: 3px 9px; border-radius: 999px; }
+.more { display: flex; justify-content: center; padding-bottom: 40px; }
+.empty { padding: 30px 0; color: var(--muted); }
+.toast { position: fixed; left: 50%; transform: translateX(-50%); bottom: calc(16px + env(safe-area-inset-bottom, 0px)); background: var(--ink); color: var(--bg); padding: 8px 14px; border-radius: 6px; font-size: 0.86rem; z-index: 20; max-width: calc(100% - 32px); }
+.export-box { width: 100%; min-height: 120px; font-family: var(--font-data); font-size: 0.75rem; background: var(--surface-2); color: var(--ink); border: 1px solid var(--line); border-radius: 6px; padding: 8px; }
+@media (max-width: 520px) { .figs { grid-template-columns: minmax(0, 1fr); } }
+@media (prefers-reduced-motion: reduce) { .progress i { transition: none; } }
+</style>
+
+<div class="wrap intro">
+  <span class="eyebrow">OpenWhistle-CNN · split de validation · revue en aveugle</span>
+  <h1>Y a-t-il un sifflement ?</h1>
+  <p class="lead" id="lead"></p>
+</div>
+
+<div class="wrap summary">
+  <section class="panel" aria-labelledby="rules-title">
+    <h2 id="rules-title">Consigne</h2>
+    <ul class="rules">
+      <li><b>Sifflement</b> : un sifflement est visible ou audible dans ces 0,4 s, même court, faible ou coupé au bord de la fenêtre.</li>
+      <li><b>Pas de sifflement</b> : seulement du bruit, des clics, des burst pulses ou d'autres sons.</li>
+      <li><b>Incertain</b> : vous n'arrivez pas à trancher après avoir regardé et écouté.</li>
+    </ul>
+    <p class="small">À gauche, l'image que voient les modèles (2–22 kHz). À droite, le spectrogramme complet de 0 à 48 kHz, recalculé depuis l'audio. L'écoute ralentie 4 fois rend audible tout le spectre. Les observations et la note sont facultatives.</p>
+    <p class="small">Répondez seul, sans chercher ces fenêtres ailleurs. Chaque annotateur ne voit que ses propres réponses ; le propriétaire de la page les voit toutes.</p>
+  </section>
+  <section class="panel" aria-labelledby="tally-title">
+    <h2 id="tally-title">Vos réponses</h2>
+    <div class="progress" aria-hidden="true"><i id="progress-bar"></i></div>
+    <p><span class="num" id="done-count">0</span> fenêtres faites sur <span class="num" id="total-count"></span></p>
+    <div class="tally-rows" id="tally-rows"></div>
+    <div class="text-field">
+      <label for="annotator">Vos initiales</label>
+      <input type="text" id="annotator" maxlength="40" placeholder="Par exemple AE" autocomplete="off">
+    </div>
+    <p class="store-note" id="store-note">Connexion à l'enregistrement des réponses…</p>
+    <div><button class="btn" id="export-btn" type="button">Copier mes réponses</button></div>
+    <textarea class="export-box" id="export-box" hidden readonly aria-label="Réponses au format JSON"></textarea>
+  </section>
+</div>
+
+<div class="toolbar">
+  <div class="wrap">
+    <div class="field"><label for="f-status">Afficher</label>
+      <select id="f-status"><option value="todo">À faire</option><option value="done">Faites</option><option value="all">Toutes</option></select></div>
+    <label class="check" for="f-color"><input type="checkbox" id="f-color" checked> Palette couleur</label>
+    <span class="count" id="count"></span>
+  </div>
+</div>
+
+<div class="wrap">
+  <div class="list" id="list"></div>
+  <div class="more"><button class="btn" id="more-btn" type="button" hidden>Afficher 20 fenêtres de plus</button></div>
+</div>
+
+<script id="payload" type="application/json">__DATA__</script>
+<script>
+(function () {
+  "use strict";
+  const D = JSON.parse(document.getElementById("payload").textContent);
+  const TAGS = D.tags;
+  const ANSWERS = [["whistle", "Sifflement"], ["noise", "Pas de sifflement"], ["unsure", "Incertain"]];
+  const PAGE = 20;
+  const items = D.items.map((it, k) => Object.assign(it, { n: k + 1 }));
+  const byId = new Map(items.map(it => [it.id, it]));
+
+  document.getElementById("lead").textContent =
+    `${items.length} fenêtres de 0,4 s du split de validation, dans un ordre tiré au hasard. Pour chacune, dites si un sifflement est présent. ` +
+    `La page ne montre ni l'étiquette du jeu de données, ni les scores des modèles, ni l'enregistrement d'origine : ` +
+    `vos réponses servent à mesurer l'accord entre annotateurs et la fiabilité des étiquettes.`;
+  document.getElementById("total-count").textContent = items.length;
+
+  function el(tag, cls, text) {
+    const e = document.createElement(tag);
+    if (cls) e.className = cls;
+    if (text !== undefined) e.textContent = text;
+    return e;
+  }
+
+  // ---------- filters and initials (kept in this browser only) ----------
+  const fStatus = document.getElementById("f-status");
+  const fColor = document.getElementById("f-color");
+  const who = document.getElementById("annotator");
+  try {
+    const saved = JSON.parse(localStorage.getItem("owb-filters") || "{}");
+    if (saved.status && [...fStatus.options].some(o => o.value === saved.status)) fStatus.value = saved.status;
+    if (typeof saved.color === "boolean") fColor.checked = saved.color;
+    who.value = localStorage.getItem("owb-annotator") || "";
+  } catch (e) { /* storage unavailable: defaults */ }
+  function rememberFilters() {
+    try { localStorage.setItem("owb-filters", JSON.stringify({ status: fStatus.value, color: fColor.checked })); } catch (e) { /* ignore */ }
+  }
+  who.addEventListener("change", () => {
+    who.value = who.value.trim();
+    try { localStorage.setItem("owb-annotator", who.value); } catch (e) { /* ignore */ }
+    writeProfile();
+  });
+
+  // ---------- answer store ----------
+  const answers = new Map();
+  let store = { kind: "pending", db: null, base: "", owner: false };
+  const chains = new Map();
+  const note = document.getElementById("store-note");
+  function setNote(text, warn) { note.textContent = text; note.classList.toggle("warn", !!warn); }
+  function isDone(id) { const v = answers.get(id); return !!(v && (v.a || (v.tags && v.tags.length) || v.note)); }
+
+  function loadLocal() {
+    try {
+      const saved = JSON.parse(localStorage.getItem("owb-answers") || "{}");
+      Object.entries(saved).forEach(([id, v]) => { if (byId.has(id)) answers.set(id, v); });
+    } catch (e) { /* ignore */ }
+  }
+  function saveLocal() {
+    try { localStorage.setItem("owb-answers", JSON.stringify(Object.fromEntries(answers))); } catch (e) { /* ignore */ }
+  }
+  function useLocal(reason) {
+    store = { kind: "local", db: null, base: "", owner: false };
+    loadLocal();
+    saveLocal();
+    setNote(reason + " Vos réponses restent dans ce navigateur : à la fin, utilisez « Copier mes réponses » et envoyez le texte au propriétaire de la page.", true);
+    applyFilters();
+    refreshTally();
+  }
+
+  async function initStore() {
+    let db = null, user = null, uid = null;
+    try { db = window.claude && window.claude.use ? await window.claude.use("db") : null; } catch (e) { db = null; }
+    if (!db) { useLocal("L'enregistrement en ligne n'est pas disponible dans cette vue."); return; }
+    try { user = await window.claude.use("user"); uid = user ? await user.id() : null; } catch (e) { uid = null; }
+    if (!uid) { useLocal("Cette vue ne vous identifie pas, l'enregistrement en ligne est donc impossible."); return; }
+    let can = null, owner = false;
+    try { can = await user.can("data.write"); owner = await user.isOwner(); } catch (e) { /* not told: a refused write decides */ }
+    if (can === false) { useLocal("Votre accès à cette page ne permet pas d'enregistrer en ligne."); return; }
+    store = { kind: "db", db, base: "answers/" + uid, owner };
+    let settled = false, first = true;
+    const timer = setTimeout(() => {
+      if (!settled) setNote("Vos réponses déjà enregistrées ne sont pas encore joignables ; les nouvelles seront envoyées dès que possible.", true);
+    }, 10000);
+    db.collection(store.base + "/w").onSnapshot(snap => {
+      if (first) {
+        first = false;
+        snap.docChanges().forEach(ch => { if (ch.type !== "removed") answers.set(ch.doc.id, ch.doc.data()); });
+        applyFilters();
+      }
+      if (!snap.metadata.fromCache && !settled) {
+        settled = true;
+        clearTimeout(timer);
+        setNote("Réponses enregistrées en ligne, sous votre compte.");
+      }
+      snap.docChanges().forEach(ch => {
+        if (ch.type === "removed") answers.delete(ch.doc.id);
+        else answers.set(ch.doc.id, ch.doc.data());
+        refreshCard(ch.doc.id);
+      });
+      refreshTally();
+    }, err => {
+      clearTimeout(timer);
+      settled = true;
+      setNote("Vos réponses ne se chargent pas (" + (err && err.code ? err.code : "erreur") + ").", true);
+    });
+    refreshAll();
+  }
+
+  let profileKey = null;
+  function writeProfile() {
+    if (store.kind !== "db") return;
+    const label = who.value.trim();
+    if (profileKey === label) return;
+    profileKey = label;
+    store.db.doc(store.base).set({ owner: store.owner, annotator: label, updated: new Date().toISOString() })
+      .catch(() => { profileKey = null; });
+  }
+
+  function save(id, body) {
+    const empty = !body.a && !body.tags.length && !body.note;
+    const full = Object.assign({}, body, { annotator: who.value.trim(), owner: store.owner, updated: new Date().toISOString() });
+    if (empty) answers.delete(id); else answers.set(id, full);
+    refreshCard(id);
+    refreshTally();
+    if (store.kind === "local") { saveLocal(); return; }
+    if (store.kind !== "db") return;
+    writeProfile();
+    const ref = store.db.doc(store.base + "/w/" + id);
+    const next = (chains.get(id) || Promise.resolve())
+      .then(() => (empty ? ref.delete() : ref.set(full)))
+      .catch(e => {
+        if (store.kind !== "db") return;
+        if (e && e.code === "invalid_argument") useLocal("Votre accès à cette page ne permet pas d'enregistrer en ligne.");
+        else toast("Réponse non enregistrée (" + (e && e.code ? e.code : "erreur") + "). Réessayez dans un instant.");
+      });
+    chains.set(id, next);
+  }
+  function current(id) {
+    const v = answers.get(id) || {};
+    return { a: v.a || "", tags: Array.isArray(v.tags) ? v.tags.slice() : [], note: v.note || "" };
+  }
+
+  // ---------- list ----------
+  let filtered = [];
+  let shown = 0;
+  const list = document.getElementById("list");
+  const moreBtn = document.getElementById("more-btn");
+  const countEl = document.getElementById("count");
+
+  function applyFilters() {
+    const status = fStatus.value;
+    filtered = items.filter(it => status === "all" || (status === "todo") !== isDone(it.id));
+    list.textContent = "";
+    shown = 0;
+    showMore();
+    countEl.textContent = `${filtered.length} fenêtres affichées`;
+    if (!filtered.length) {
+      list.appendChild(el("p", "empty", status === "todo" ? "Toutes les fenêtres sont faites. Merci !" : "Aucune fenêtre faite pour l'instant."));
+    }
+  }
+  function showMore() {
+    filtered.slice(shown, shown + PAGE).forEach(it => list.appendChild(buildCard(it)));
+    shown = Math.min(filtered.length, shown + PAGE);
+    moreBtn.hidden = shown >= filtered.length;
+    moreBtn.textContent = `Afficher ${Math.min(PAGE, filtered.length - shown)} fenêtres de plus`;
+  }
+  moreBtn.addEventListener("click", showMore);
+  fStatus.addEventListener("change", () => { rememberFilters(); applyFilters(); });
+  fColor.addEventListener("change", () => {
+    rememberFilters();
+    list.querySelectorAll(".card").forEach(card => { if (card._drawn) drawCard(card); });
+  });
+
+  function axis(ticks) {
+    const a = el("div", "axis");
+    ticks.forEach(([label, top]) => { const s = el("span", null, label); s.style.top = top + "%"; a.appendChild(s); });
+    return a;
+  }
+  function figure(cls, label, caption, ticks) {
+    const f = el("figure");
+    const p = el("div", "plot");
+    p.appendChild(axis(ticks));
+    const box = el("div", "canvas-box " + cls);
+    const c = document.createElement("canvas");
+    if (cls === "model") { c.width = 224; c.height = 224; }
+    c.setAttribute("role", "img");
+    c.setAttribute("aria-label", label);
+    box.appendChild(c);
+    box.appendChild(el("div", "loading", "Chargement…"));
+    p.appendChild(box);
+    f.appendChild(p);
+    f.appendChild(el("figcaption", null, caption));
+    return f;
+  }
+
+  function buildCard(it) {
+    const card = el("article", "card");
+    card.dataset.id = it.id;
+    card.id = "card-" + it.id;
+    const head = el("header", "card-head");
+    const name = el("span", "name", "Fenêtre ");
+    name.appendChild(el("span", "num", String(it.n)));
+    head.appendChild(name);
+    head.appendChild(el("span", "status"));
+    card.appendChild(head);
+
+    const figs = el("div", "figs");
+    figs.appendChild(figure("model", "Spectrogramme de 2 à 22 kHz vu par les modèles", "Image des modèles · 2–22 kHz · 0,4 s",
+      [["20", 10], ["15", 35], ["10", 60], ["5", 85]]));
+    figs.appendChild(figure("full", "Spectrogramme complet de 0 à 48 kHz", "Spectrogramme 0–48 kHz · pointillés : 2 et 22 kHz",
+      [["40", 100 * 8 / 48], ["30", 100 * 18 / 48], ["20", 100 * 28 / 48], ["10", 100 * 38 / 48]]));
+    card.appendChild(figs);
+
+    const listen = el("div", "listen");
+    [["Écouter", 1], ["Écouter ralenti ×¼", 0.25]].forEach(([label, rate]) => {
+      const b = el("button", "btn", label);
+      b.type = "button";
+      b.addEventListener("click", () => play(it.id, rate, b));
+      listen.appendChild(b);
+    });
+    listen.appendChild(el("span", "hint", "volume normalisé"));
+    card.appendChild(listen);
+
+    const abox = el("div", "answer");
+    abox.setAttribute("role", "group");
+    abox.setAttribute("aria-label", "Réponse pour la fenêtre " + it.n);
+    ANSWERS.forEach(([a, label]) => {
+      const b = el("button", "btn", label);
+      b.type = "button";
+      b.dataset.a = a;
+      b.addEventListener("click", () => {
+        const cur = current(it.id);
+        cur.a = cur.a === a ? "" : a;
+        save(it.id, cur);
+      });
+      abox.appendChild(b);
+    });
+    card.appendChild(abox);
+    const tbox = el("div", "tags");
+    tbox.setAttribute("role", "group");
+    tbox.setAttribute("aria-label", "Observations");
+    TAGS.forEach(([t, label]) => {
+      const b = el("button", "btn", label);
+      b.type = "button";
+      b.dataset.t = t;
+      b.addEventListener("click", () => {
+        const cur = current(it.id);
+        cur.tags = cur.tags.includes(t) ? cur.tags.filter(x => x !== t) : cur.tags.concat(t);
+        save(it.id, cur);
+      });
+      tbox.appendChild(b);
+    });
+    card.appendChild(tbox);
+    const nbox = el("div", "text-field");
+    const lab = el("label", null, "Note");
+    lab.htmlFor = "note-" + it.id;
+    const input = document.createElement("input");
+    input.type = "text";
+    input.id = "note-" + it.id;
+    input.placeholder = "Ce que vous voyez ou entendez";
+    input.addEventListener("change", () => {
+      const cur = current(it.id);
+      cur.note = input.value.trim();
+      save(it.id, cur);
+    });
+    nbox.appendChild(lab);
+    nbox.appendChild(input);
+    card.appendChild(nbox);
+
+    refreshCardEl(card, it.id);
+    observer.observe(card);
+    return card;
+  }
+  function refreshCard(id) {
+    const card = document.getElementById("card-" + id);
+    if (card) refreshCardEl(card, id);
+  }
+  function refreshCardEl(card, id) {
+    const v = current(id);
+    const done = isDone(id);
+    const locked = store.kind === "pending";
+    card.classList.toggle("done", done);
+    card.querySelector(".status").textContent = done ? "Faite" : "À faire";
+    card.querySelectorAll(".answer .btn").forEach(b => { b.setAttribute("aria-pressed", String(v.a === b.dataset.a)); b.disabled = locked; });
+    card.querySelectorAll(".tags .btn").forEach(b => { b.setAttribute("aria-pressed", String(v.tags.includes(b.dataset.t))); b.disabled = locked; });
+    const input = card.querySelector(".text-field input");
+    if (document.activeElement !== input) input.value = v.note;
+    input.disabled = locked;
+  }
+  function refreshTally() {
+    const counts = { whistle: 0, noise: 0, unsure: 0 };
+    let done = 0;
+    items.forEach(it => {
+      if (!isDone(it.id)) return;
+      done += 1;
+      const v = current(it.id);
+      if (counts[v.a] !== undefined) counts[v.a] += 1;
+    });
+    document.getElementById("done-count").textContent = done;
+    document.getElementById("progress-bar").style.width = (100 * done / items.length).toFixed(1) + "%";
+    const rows = document.getElementById("tally-rows");
+    rows.textContent = "";
+    ANSWERS.forEach(([a, label]) => { rows.appendChild(el("span", null, label)); rows.appendChild(el("span", "num", String(counts[a]))); });
+  }
+  function refreshAll() {
+    list.querySelectorAll(".card").forEach(card => refreshCardEl(card, card.dataset.id));
+    refreshTally();
+  }
+
+  // ---------- audio and spectrograms ----------
+  const cache = new Map();
+  function b64(s) {
+    const bin = atob(s);
+    const out = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+    return out;
+  }
+  function parseWav(bytes) {
+    const dv = new DataView(bytes.buffer);
+    const tag = o => String.fromCharCode(bytes[o], bytes[o + 1], bytes[o + 2], bytes[o + 3]);
+    if (tag(0) !== "RIFF" || tag(8) !== "WAVE") throw new Error("not a WAV file");
+    let o = 12, fmtCode = 1, channels = 1, sr = 96000, bits = 16, data = null;
+    while (o + 8 <= bytes.length) {
+      const id = tag(o), size = dv.getUint32(o + 4, true);
+      if (id === "fmt ") {
+        fmtCode = dv.getUint16(o + 8, true); channels = dv.getUint16(o + 10, true);
+        sr = dv.getUint32(o + 12, true); bits = dv.getUint16(o + 22, true);
+      } else if (id === "data") { data = [o + 8, Math.min(size, bytes.length - o - 8)]; break; }
+      o += 8 + size + (size % 2);
+    }
+    if (!data) throw new Error("no audio data");
+    const step = bits / 8 * channels;
+    const n = Math.floor(data[1] / step);
+    const pcm = new Float32Array(n);
+    for (let i = 0; i < n; i++) {
+      const p = data[0] + i * step;
+      pcm[i] = fmtCode === 3 ? dv.getFloat32(p, true) : bits === 16 ? dv.getInt16(p, true) / 32768 : bits === 32 ? dv.getInt32(p, true) / 2147483648 : (bytes[p] - 128) / 128;
+    }
+    return { pcm, sr };
+  }
+  const files = new Map();
+  function fetchFile(path) {
+    if (!files.has(path)) {
+      files.set(path, fetch(path).then(r => {
+        if (!r.ok) throw new Error("HTTP " + r.status);
+        return r.json();
+      }).catch(e => { files.delete(path); throw e; }));
+    }
+    return files.get(path);
+  }
+  function loadItem(id) {
+    if (!cache.has(id)) {
+      const it = byId.get(id);
+      cache.set(id, fetchFile(it.f).then(j => j[id]).then(async j => {
+        const img = new Image();
+        img.src = "data:image/png;base64," + j.png;
+        await img.decode();
+        const { pcm, sr } = parseWav(b64(j.wav));
+        let peak = 0;
+        for (let i = 0; i < pcm.length; i++) peak = Math.max(peak, Math.abs(pcm[i]));
+        const playable = new Float32Array(pcm.length);
+        const g = peak > 0 ? 0.9 / peak : 1;
+        for (let i = 0; i < pcm.length; i++) playable[i] = pcm[i] * g;
+        return { img, pcm, play: playable, sr, spec: null };
+      }).catch(e => { cache.delete(id); throw e; }));
+    }
+    return cache.get(id);
+  }
+
+  const N = 1024, HOP = 128;
+  const hann = new Float64Array(N).map((_, n) => 0.5 - 0.5 * Math.cos(2 * Math.PI * n / N));
+  const rev = new Uint32Array(N);
+  for (let i = 0, bitsN = Math.log2(N); i < N; i++) { let r = 0; for (let b = 0; b < bitsN; b++) r |= ((i >> b) & 1) << (bitsN - 1 - b); rev[i] = r; }
+  const cosT = new Float64Array(N / 2).map((_, k) => Math.cos(-2 * Math.PI * k / N));
+  const sinT = new Float64Array(N / 2).map((_, k) => Math.sin(-2 * Math.PI * k / N));
+  function fft(re, im) {
+    for (let i = 0; i < N; i++) { const j = rev[i]; if (j > i) { let t = re[i]; re[i] = re[j]; re[j] = t; t = im[i]; im[i] = im[j]; im[j] = t; } }
+    for (let size = 2; size <= N; size <<= 1) {
+      const half = size >> 1, step = N / size;
+      for (let s = 0; s < N; s += size) {
+        for (let k = 0; k < half; k++) {
+          const wr = cosT[k * step], wi = sinT[k * step];
+          const a = s + k, b = a + half;
+          const xr = re[b] * wr - im[b] * wi, xi = re[b] * wi + im[b] * wr;
+          re[b] = re[a] - xr; im[b] = im[a] - xi; re[a] += xr; im[a] += xi;
+        }
+      }
+    }
+  }
+  function spectrogram(pcm) {
+    const frames = Math.max(1, Math.floor((pcm.length - N) / HOP) + 1), bins = N / 2 + 1;
+    const out = new Float32Array(frames * bins);
+    const re = new Float64Array(N), im = new Float64Array(N);
+    for (let f = 0; f < frames; f++) {
+      for (let n = 0; n < N; n++) { re[n] = (pcm[f * HOP + n] || 0) * hann[n]; im[n] = 0; }
+      fft(re, im);
+      for (let k = 0; k < bins; k++) out[f * bins + k] = 10 * Math.log10(re[k] * re[k] + im[k] * im[k] + 1e-20);
+    }
+    const sample = Array.from(out.filter((_, i) => i % 7 === 0)).sort((a, b) => a - b);
+    const lo = sample[Math.floor(0.02 * (sample.length - 1))], hi = sample[Math.floor(0.998 * (sample.length - 1))];
+    return { frames, bins, out, lo, hi };
+  }
+  const STOPS = [[0, [68, 1, 84]], [0.25, [59, 82, 139]], [0.5, [33, 145, 140]], [0.75, [94, 201, 98]], [1, [253, 231, 37]]];
+  const LUT = new Uint8Array(256 * 3);
+  for (let i = 0; i < 256; i++) {
+    const t = i / 255;
+    let j = 0;
+    while (j < STOPS.length - 2 && t > STOPS[j + 1][0]) j++;
+    const [t0, c0] = STOPS[j], [t1, c1] = STOPS[j + 1];
+    const u = (t - t0) / (t1 - t0);
+    for (let c = 0; c < 3; c++) LUT[i * 3 + c] = Math.round(c0[c] + u * (c1[c] - c0[c]));
+  }
+  function paint(px, value, color) {
+    if (color) { px[0] = LUT[value * 3]; px[1] = LUT[value * 3 + 1]; px[2] = LUT[value * 3 + 2]; }
+    else { px[0] = px[1] = px[2] = value; }
+  }
+  function drawCard(card) {
+    const data = card._data;
+    if (!data) return;
+    const color = fColor.checked;
+    const c1 = card.querySelector(".canvas-box.model canvas");
+    const x1 = c1.getContext("2d");
+    x1.drawImage(data.img, 0, 0, 224, 224);
+    const im1 = x1.getImageData(0, 0, 224, 224);
+    for (let p = 0; p < im1.data.length; p += 4) paint(im1.data.subarray(p, p + 3), im1.data[p], color);
+    x1.putImageData(im1, 0, 0);
+
+    if (!data.spec) data.spec = spectrogram(data.pcm);
+    const { frames, bins, out, lo, hi } = data.spec;
+    const c2 = card.querySelector(".canvas-box.full canvas");
+    c2.width = frames; c2.height = bins;
+    const x2 = c2.getContext("2d");
+    const im2 = x2.createImageData(frames, bins);
+    const span = Math.max(1e-6, hi - lo);
+    for (let f = 0; f < frames; f++) {
+      for (let k = 0; k < bins; k++) {
+        const v = Math.max(0, Math.min(255, Math.round(255 * (out[f * bins + k] - lo) / span)));
+        const p = ((bins - 1 - k) * frames + f) * 4;
+        paint(im2.data.subarray(p, p + 3), v, color);
+        im2.data[p + 3] = 255;
+      }
+    }
+    x2.putImageData(im2, 0, 0);
+    const binHz = data.sr / N;
+    x2.strokeStyle = "rgba(255, 255, 255, 0.75)";
+    x2.setLineDash([6, 4]);
+    x2.lineWidth = 1.5;
+    [2000, 22000].forEach(hz => { const y = bins - 1 - hz / binHz; x2.beginPath(); x2.moveTo(0, y); x2.lineTo(frames, y); x2.stroke(); });
+    card.querySelectorAll(".loading").forEach(l => l.remove());
+    card._drawn = true;
+  }
+  const observer = new IntersectionObserver(entries => {
+    entries.forEach(entry => {
+      if (!entry.isIntersecting) return;
+      const card = entry.target;
+      observer.unobserve(card);
+      loadItem(card.dataset.id).then(data => { card._data = data; drawCard(card); })
+        .catch(() => card.querySelectorAll(".loading").forEach(l => { l.textContent = "Audio et image indisponibles"; }));
+    });
+  }, { rootMargin: "800px 0px" });
+
+  let actx = null, playing = null;
+  function play(id, rate, btn) {
+    try {
+      if (!actx) actx = new (window.AudioContext || window.webkitAudioContext)();
+      if (actx.state === "suspended") actx.resume();
+    } catch (e) { toast("La lecture audio n'est pas disponible dans cette vue."); return; }
+    if (playing) { try { playing.src.stop(); } catch (e) { /* already stopped */ } }
+    const wasSame = playing && playing.btn === btn;
+    playing = null;
+    if (wasSame) return;
+    loadItem(id).then(data => {
+      const buf = actx.createBuffer(1, data.play.length, data.sr);
+      buf.copyToChannel(data.play, 0);
+      const src = actx.createBufferSource();
+      src.buffer = buf;
+      src.playbackRate.value = rate;
+      src.connect(actx.destination);
+      const label = btn.textContent;
+      btn.textContent = "■ Arrêter";
+      btn.setAttribute("aria-pressed", "true");
+      const me = { src, btn };
+      src.onended = () => { btn.textContent = label; btn.removeAttribute("aria-pressed"); if (playing === me) playing = null; };
+      playing = me;
+      src.start();
+    }).catch(() => toast("Audio indisponible pour cette fenêtre."));
+  }
+
+  // ---------- export and toast ----------
+  let toastTimer = null;
+  function toast(text) {
+    let t = document.querySelector(".toast");
+    if (!t) { t = el("div", "toast"); t.setAttribute("role", "status"); document.body.appendChild(t); }
+    t.textContent = text;
+    t.hidden = false;
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => { t.hidden = true; }, 4000);
+  }
+  document.getElementById("export-btn").addEventListener("click", () => {
+    const rows = items.filter(it => isDone(it.id)).map(it => Object.assign({ id: it.id }, current(it.id)));
+    const text = JSON.stringify({ annotator: who.value.trim(), answers: rows });
+    const box = document.getElementById("export-box");
+    const fallback = () => { box.hidden = false; box.value = text; box.focus(); box.select(); toast("Sélectionnez le texte puis copiez-le."); };
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(() => toast(rows.length + " réponses copiées."), fallback);
+    } else fallback();
+  });
+
+  applyFilters();
+  refreshTally();
+  initStore();
+})();
+</script>

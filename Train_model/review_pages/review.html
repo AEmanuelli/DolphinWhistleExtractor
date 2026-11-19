@@ -1,0 +1,790 @@
+<title>Revue des erreurs OpenWhistle</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<style>
+/* Layout: a lab bench. Summary first, a sticky filter bar, then one card per misclassified window. */
+:root {
+  --bg: #f1f5f6;
+  --surface: #ffffff;
+  --surface-2: #e7eef1;
+  --ink: #13232e;
+  --muted: #566874;
+  --line: #d3dde2;
+  --accent: #1d5ca8;
+  --accent-ink: #ffffff;
+  --miss: #a6520b;
+  --miss-bg: #fbecdc;
+  --fa: #6e3aa6;
+  --fa-bg: #efe5f9;
+  --good: #23764a;
+  --bad: #b2261d;
+  --unsure: #7d6400;
+  --plot-bg: #0b1418;
+  --font-body: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-data: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+  --radius: 8px;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0d151a; --surface: #142028; --surface-2: #1b2a33; --ink: #e2ebf0; --muted: #94a6b1; --line: #2a3a45;
+    --accent: #72a9ee; --accent-ink: #0d151a; --miss: #f2a65e; --miss-bg: #3a2614; --fa: #c7a0ee; --fa-bg: #2d2140;
+    --good: #6cc892; --bad: #f2867c; --unsure: #e0c25a; --plot-bg: #05090b; color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #0d151a; --surface: #142028; --surface-2: #1b2a33; --ink: #e2ebf0; --muted: #94a6b1; --line: #2a3a45;
+  --accent: #72a9ee; --accent-ink: #0d151a; --miss: #f2a65e; --miss-bg: #3a2614; --fa: #c7a0ee; --fa-bg: #2d2140;
+  --good: #6cc892; --bad: #f2867c; --unsure: #e0c25a; --plot-bg: #05090b; color-scheme: dark;
+}
+* { box-sizing: border-box; }
+body { background: var(--bg); color: var(--ink); font-family: var(--font-body); font-size: 15px; line-height: 1.5; }
+body::before { content: ""; position: fixed; inset: 0 0 auto; height: env(safe-area-inset-top, 0px); z-index: 10; background: var(--surface); }
+.wrap { max-width: 1320px; margin: 0 auto; padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); }
+h1, h2 { text-wrap: balance; font-weight: 600; letter-spacing: -0.01em; }
+h1 { font-size: 1.75rem; margin: 0; }
+h2 { font-size: 1.15rem; margin: 0; }
+p { margin: 0; }
+.num { font-family: var(--font-data); font-variant-numeric: tabular-nums; }
+.eyebrow { font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); font-weight: 500; }
+.intro { padding-block: 28px 20px; display: grid; gap: 14px; }
+.intro .lead { max-width: 72ch; color: var(--muted); }
+.summary { display: grid; gap: 16px; grid-template-columns: minmax(0, 2fr) minmax(0, 1fr); padding-bottom: 20px; }
+@media (max-width: 900px) { .summary { grid-template-columns: minmax(0, 1fr); } }
+.panel { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 16px; display: grid; gap: 12px; min-width: 0; }
+.table-scroll { overflow-x: auto; }
+table { border-collapse: collapse; width: 100%; font-size: 0.86rem; }
+th, td { text-align: right; padding: 6px 8px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+th:first-child, td:first-child { text-align: left; }
+th { font-weight: 500; color: var(--muted); font-size: 0.74rem; text-transform: uppercase; letter-spacing: 0.05em; }
+td { font-family: var(--font-data); font-variant-numeric: tabular-nums; }
+td:first-child { font-family: var(--font-body); }
+tr.panel-row td:first-child { font-weight: 600; }
+.tally { display: grid; gap: 10px; }
+.progress { height: 6px; background: var(--surface-2); border-radius: 3px; overflow: hidden; }
+.progress i { display: block; height: 100%; background: var(--accent); width: 0; transition: width 0.3s; }
+.tally-rows { display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; font-size: 0.9rem; }
+.tally-rows span:nth-child(odd) { color: var(--muted); }
+.store-note { font-size: 0.84rem; color: var(--muted); }
+.store-note.warn { color: var(--bad); }
+details.recs > summary { cursor: pointer; font-weight: 500; }
+details.recs[open] > summary { margin-bottom: 8px; }
+.btn { font: inherit; font-size: 0.86rem; border: 1px solid var(--line); background: var(--surface); color: var(--ink); border-radius: 6px; padding: 6px 10px; cursor: pointer; }
+.btn:hover { border-color: var(--accent); }
+.btn:focus-visible, select:focus-visible, input:focus-visible, summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.btn[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+.btn:disabled { opacity: 0.5; cursor: default; }
+
+.toolbar { position: sticky; top: env(safe-area-inset-top, 0px); z-index: 5; background: var(--surface); border-block: 1px solid var(--line); }
+.toolbar .wrap { display: flex; flex-wrap: wrap; gap: 10px 14px; align-items: end; padding-block: 10px; }
+.field { display: grid; gap: 2px; min-width: 0; }
+.field label { font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); }
+select { font: inherit; font-size: 0.88rem; padding: 5px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); color: var(--ink); max-width: 100%; }
+.check { display: flex; align-items: center; gap: 6px; font-size: 0.88rem; padding-bottom: 5px; }
+.count { margin-left: auto; font-size: 0.88rem; color: var(--muted); padding-bottom: 5px; }
+
+.list { display: grid; gap: 16px; grid-template-columns: repeat(auto-fill, minmax(min(100%, 560px), 1fr)); padding-block: 18px 24px; }
+.card { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 14px; display: grid; gap: 12px; min-width: 0; }
+.card.reviewed { border-color: color-mix(in srgb, var(--accent) 45%, var(--line)); }
+.card-head { display: flex; flex-wrap: wrap; gap: 6px 10px; align-items: center; }
+.pill { font-size: 0.74rem; font-weight: 600; padding: 2px 8px; border-radius: 999px; letter-spacing: 0.02em; }
+.pill.miss { color: var(--miss); background: var(--miss-bg); }
+.pill.fa { color: var(--fa); background: var(--fa-bg); }
+.where { font-family: var(--font-data); font-size: 0.78rem; color: var(--muted); overflow-wrap: anywhere; min-width: 0; }
+.other { font-size: 0.82rem; color: var(--muted); border-left: 3px solid var(--line); padding-left: 8px; }
+.other.found { border-left-color: var(--accent); color: var(--ink); }
+.status { margin-left: auto; font-size: 0.75rem; color: var(--muted); }
+.card.reviewed .status { color: var(--accent); font-weight: 600; }
+.figs { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 10px; }
+figure { margin: 0; display: grid; gap: 4px; min-width: 0; }
+figcaption { font-size: 0.75rem; color: var(--muted); }
+.plot { display: grid; grid-template-columns: 30px minmax(0, 1fr); }
+.axis { position: relative; font-family: var(--font-data); font-size: 0.62rem; color: var(--muted); }
+.axis span { position: absolute; right: 4px; transform: translateY(-50%); white-space: nowrap; }
+.canvas-box { position: relative; aspect-ratio: 1 / 1; background: var(--plot-bg); border-radius: 4px; overflow: hidden; max-width: 100%; }
+.canvas-box canvas { width: 100%; height: 100%; display: block; }
+.canvas-box.model canvas { image-rendering: pixelated; }
+.canvas-box .loading { position: absolute; inset: 0; display: grid; place-items: center; font-size: 0.75rem; color: #9fb3bd; }
+.listen { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.listen .hint { font-size: 0.75rem; color: var(--muted); }
+.scores { display: grid; gap: 4px; }
+.score-row { display: grid; grid-template-columns: minmax(0, 11rem) minmax(0, 1fr) 3.2rem; gap: 8px; align-items: center; font-size: 0.82rem; }
+.score-row .mname { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bar { position: relative; height: 8px; background: var(--surface-2); border-radius: 4px; }
+.bar i { position: absolute; left: 0; top: 0; bottom: 0; border-radius: 4px; background: var(--good); }
+.score-row.wrong .bar i { background: var(--bad); }
+.bar b { position: absolute; left: 50%; top: -3px; bottom: -3px; width: 1px; background: var(--muted); }
+.score-row .sval { font-family: var(--font-data); font-variant-numeric: tabular-nums; text-align: right; }
+.score-row.wrong .sval { color: var(--bad); font-weight: 500; }
+details.all > summary { cursor: pointer; font-size: 0.84rem; color: var(--muted); }
+details.all[open] > summary { margin-bottom: 6px; }
+.verdict { display: flex; flex-wrap: wrap; gap: 6px; }
+.verdict .btn[data-v="model"][aria-pressed="true"] { background: var(--accent); border-color: var(--accent); }
+.verdict .btn[data-v="label"][aria-pressed="true"] { background: var(--bad); border-color: var(--bad); color: var(--surface); }
+.verdict .btn[data-v="unsure"][aria-pressed="true"] { background: var(--unsure); border-color: var(--unsure); color: var(--surface); }
+.tags { display: flex; flex-wrap: wrap; gap: 6px; }
+.tags .btn { font-size: 0.78rem; padding: 3px 9px; border-radius: 999px; }
+.note { display: grid; gap: 2px; }
+.note label { font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); }
+.note input { font: inherit; font-size: 0.88rem; padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); color: var(--ink); width: 100%; }
+.more { display: flex; justify-content: center; padding-bottom: 40px; }
+.empty { padding: 30px 0; color: var(--muted); }
+.toast { position: fixed; left: 50%; transform: translateX(-50%); bottom: calc(16px + env(safe-area-inset-bottom, 0px)); background: var(--ink); color: var(--bg); padding: 8px 14px; border-radius: 6px; font-size: 0.86rem; z-index: 20; max-width: calc(100% - 32px); }
+.export-box { width: 100%; min-height: 120px; font-family: var(--font-data); font-size: 0.75rem; background: var(--surface-2); color: var(--ink); border: 1px solid var(--line); border-radius: 6px; padding: 8px; }
+@media (max-width: 520px) {
+  .figs { grid-template-columns: minmax(0, 1fr); }
+  .score-row { grid-template-columns: minmax(0, 8rem) minmax(0, 1fr) 3rem; }
+}
+@media (prefers-reduced-motion: reduce) { .progress i { transition: none; } }
+</style>
+
+<div class="wrap intro">
+  <span class="eyebrow">OpenWhistle-CNN · split de validation</span>
+  <h1>Revue des erreurs de validation</h1>
+  <p class="lead" id="lead"></p>
+</div>
+
+<div class="wrap summary">
+  <section class="panel" aria-labelledby="models-title">
+    <h2 id="models-title">Modèles comparés</h2>
+    <div class="table-scroll"><table id="models-table"></table></div>
+    <p class="store-note">En gras, le panel dont les erreurs sont listées ci-dessous. Accuracy, precision et recall au seuil 0,5, sur les <span class="num" id="n-val"></span> fenêtres de validation.</p>
+    <details class="recs">
+      <summary>Erreurs par enregistrement</summary>
+      <div class="table-scroll"><table id="recs-table"></table></div>
+    </details>
+  </section>
+  <section class="panel tally" aria-labelledby="tally-title">
+    <h2 id="tally-title">Vos verdicts</h2>
+    <div class="progress" aria-hidden="true"><i id="progress-bar"></i></div>
+    <p><span class="num" id="reviewed-count">0</span> fenêtres revues sur <span class="num" id="total-count"></span></p>
+    <div class="tally-rows" id="tally-rows"></div>
+    <p class="store-note" id="store-note">Connexion à l'enregistrement des verdicts…</p>
+    <div><button class="btn" id="export-btn" type="button">Copier les verdicts</button></div>
+    <textarea class="export-box" id="export-box" hidden readonly aria-label="Verdicts au format JSON"></textarea>
+  </section>
+</div>
+
+<div class="toolbar">
+  <div class="wrap">
+    <div class="field"><label for="f-panel">Erreurs de</label><select id="f-panel"></select></div>
+    <div class="field"><label for="f-type">Type</label>
+      <select id="f-type"><option value="all">Toutes</option><option value="miss">Sifflements manqués</option><option value="fa">Fausses alarmes</option></select></div>
+    <div class="field"><label for="f-status">Statut</label>
+      <select id="f-status"><option value="all">Toutes</option><option value="todo">À revoir</option><option value="done">Revues</option></select></div>
+    <div class="field"><label for="f-round">Série</label>
+      <select id="f-round"><option value="all">Toutes</option><option value="2">2e série</option><option value="1">1re série</option></select></div>
+    <div class="field"><label for="f-rec">Enregistrement</label><select id="f-rec"></select></div>
+    <div class="field"><label for="f-sort">Tri</label>
+      <select id="f-sort"><option value="strength">Erreur la plus nette d'abord</option><option value="agree">Modèles en désaccord avec l'étiquette</option><option value="time">Enregistrement, puis temps</option></select></div>
+    <label class="check" for="f-color"><input type="checkbox" id="f-color" checked> Palette couleur</label>
+    <span class="count" id="count"></span>
+  </div>
+</div>
+
+<div class="wrap">
+  <div class="list" id="list"></div>
+  <div class="more"><button class="btn" id="more-btn" type="button" hidden>Afficher 20 fenêtres de plus</button></div>
+</div>
+
+<script id="payload" type="application/json">__DATA__</script>
+<script>
+(function () {
+  "use strict";
+  const D = JSON.parse(document.getElementById("payload").textContent);
+  const M = D.models;
+  const PANEL = M.filter(m => m.panel).map(m => m.key);
+  const IDX = Object.fromEntries(M.map((m, i) => [m.key, i]));
+  const TAGS = D.tags;
+  const VERDICTS = [["model", "Le modèle se trompe"], ["label", "L'étiquette est fausse"], ["unsure", "Ambigu"]];
+  const PAGE = 20;
+  const fmt = (x, d = 2) => x.toFixed(d).replace(".", ",");
+  const pct = x => fmt(100 * x, 1) + " %";
+
+  const items = D.items.map(it => {
+    const wrong = M.map((m, k) => (it.s[k] >= 0.5) !== (it.y === 1));
+    const panelErr = PANEL.map(key => Math.abs(it.s[IDX[key]] - it.y));
+    return Object.assign(it, {
+      wrong, type: it.y === 1 ? "miss" : "fa",
+      nWrong: wrong.filter(Boolean).length,
+      strength: panelErr.reduce((a, b) => a + b, 0) / panelErr.length,
+    });
+  });
+  const byId = new Map(items.map(it => [it.id, it]));
+
+  // ---------- summary ----------
+  document.getElementById("lead").textContent =
+    `${items.length} des ${D.n} fenêtres de validation (0,4 s) sont mal classées par au moins un modèle du panel, au seuil 0,5. ` +
+    `Pour chacune : l'image vue par le modèle (2–22 kHz), le spectrogramme complet 0–48 kHz recalculé depuis l'audio, l'écoute à vitesse normale ou ralentie 4 fois ` +
+    `(ce qui rend audible tout le spectre jusqu'à 48 kHz), et le score des ${M.length} modèles. Vos verdicts sont enregistrés au fur et à mesure.` +
+    (items.some(it => it.r === 2) ? ` La 2e série ajoute ${items.filter(it => it.r === 2).length} fenêtres absentes d'une revue précédente (filtre « Série »).` : "");
+  document.getElementById("n-val").textContent = D.n.toLocaleString("fr-FR");
+  document.getElementById("total-count").textContent = items.length;
+
+  const mt = document.getElementById("models-table");
+  mt.innerHTML = "<thead><tr><th>Modèle</th><th>Paramètres</th><th>Accuracy</th><th>Precision</th><th>Recall</th><th>Manqués</th><th>Fausses al.</th></tr></thead>";
+  const mtb = document.createElement("tbody");
+  M.forEach(m => {
+    const tr = document.createElement("tr");
+    if (m.panel) tr.className = "panel-row";
+    const cells = [m.name, m.params ? m.params.toLocaleString("fr-FR") : "–", pct(m.acc), pct(m.prec), pct(m.rec), m.fn, m.fp];
+    cells.forEach(c => { const td = document.createElement("td"); td.textContent = c; tr.appendChild(td); });
+    mtb.appendChild(tr);
+  });
+  mt.appendChild(mtb);
+
+  const rt = document.getElementById("recs-table");
+  const recHead = ["Enregistrement", "Fenêtres", "Sifflements"].concat(PANEL.map(k => "Err. " + M[IDX[k]].short));
+  rt.innerHTML = "<thead><tr>" + recHead.map(h => `<th>${h}</th>`).join("") + "</tr></thead>";
+  const rtb = document.createElement("tbody");
+  D.recordings.forEach(r => {
+    const tr = document.createElement("tr");
+    const cells = [r.name, r.n, r.w].concat(PANEL.map(k => `${r.err[k]} (${fmt(100 * r.err[k] / r.n, 1)} %)`));
+    cells.forEach(c => { const td = document.createElement("td"); td.textContent = c; tr.appendChild(td); });
+    rtb.appendChild(tr);
+  });
+  rt.appendChild(rtb);
+
+  // ---------- filters ----------
+  const fPanel = document.getElementById("f-panel");
+  [["any", "Au moins un modèle du panel"], ["all", "Tous les modèles du panel"]]
+    .concat(PANEL.map(k => [k, M[IDX[k]].name]))
+    .forEach(([v, t]) => fPanel.add(new Option(t, v)));
+  const fRec = document.getElementById("f-rec");
+  fRec.add(new Option("Tous", "all"));
+  D.recordings.forEach(r => fRec.add(new Option(r.name, r.name)));
+  const controls = ["f-panel", "f-type", "f-status", "f-rec", "f-sort", "f-round"].map(id => document.getElementById(id));
+  const fColor = document.getElementById("f-color");
+  if (!items.some(it => it.r === 2)) {  // a single review series: no series filter
+    const fRound = document.getElementById("f-round");
+    fRound.closest(".field").hidden = true;
+    [...fRound.options].forEach(o => { if (o.value !== "all") o.remove(); });
+  }
+  try {
+    const saved = JSON.parse(localStorage.getItem("owr-filters") || "{}");
+    controls.forEach(c => { if (saved[c.id] && [...c.options].some(o => o.value === saved[c.id])) c.value = saved[c.id]; });
+    if (typeof saved.color === "boolean") fColor.checked = saved.color;
+  } catch (e) { /* storage unavailable: defaults */ }
+  function rememberFilters() {
+    try {
+      const o = Object.fromEntries(controls.map(c => [c.id, c.value]));
+      o.color = fColor.checked;
+      localStorage.setItem("owr-filters", JSON.stringify(o));
+    } catch (e) { /* ignore */ }
+  }
+
+  // ---------- verdict store ----------
+  const verdicts = new Map();
+  let store = { kind: "pending", db: null, writable: true };
+  const chains = new Map();
+  const note = document.getElementById("store-note");
+  function setNote(text, warn) { note.textContent = text; note.classList.toggle("warn", !!warn); }
+  function isReviewed(id) { const v = verdicts.get(id); return !!(v && (v.verdict || (v.tags && v.tags.length) || v.note)); }
+
+  function loadLocal() {
+    try {
+      const saved = JSON.parse(localStorage.getItem("owr-verdicts") || "{}");
+      Object.entries(saved).forEach(([id, v]) => verdicts.set(id, v));
+    } catch (e) { /* ignore */ }
+  }
+  function saveLocal() {
+    try { localStorage.setItem("owr-verdicts", JSON.stringify(Object.fromEntries(verdicts))); } catch (e) { /* ignore */ }
+  }
+  function useLocal(reason) {
+    store = { kind: "local", db: null, writable: true };
+    loadLocal();
+    setNote(reason + " Vos verdicts restent dans ce navigateur : utilisez « Copier les verdicts » pour les récupérer au format JSON.", true);
+    refreshAll();
+  }
+
+  async function initStore() {
+    let db = null;
+    try { db = window.claude && window.claude.use ? await window.claude.use("db") : null; } catch (e) { db = null; }
+    if (!db) { useLocal("L'enregistrement partagé n'est pas disponible dans cette vue."); return; }
+    store = { kind: "db", db, writable: true };
+    try {
+      const user = await window.claude.use("user");
+      const can = user ? await user.can("data.write") : null;
+      if (can === false) {
+        store.writable = false;
+        setNote("Lecture seule : vous pouvez consulter les verdicts mais pas en ajouter.", true);
+      }
+    } catch (e) { /* not told: keep inputs, a refused write decides */ }
+    let settled = false;
+    const timer = setTimeout(() => {
+      if (!settled) setNote("Les verdicts déjà enregistrés ne sont pas encore joignables ; ceux que vous ajoutez seront envoyés dès que possible.", true);
+    }, 10000);
+    db.collection("verdicts").onSnapshot(snap => {
+      if (!snap.metadata.fromCache && !settled) {
+        settled = true;
+        clearTimeout(timer);
+        if (store.writable) setNote("Verdicts enregistrés en ligne.");
+      }
+      snap.docChanges().forEach(ch => {
+        if (ch.type === "removed") verdicts.delete(ch.doc.id);
+        else verdicts.set(ch.doc.id, ch.doc.data());
+        refreshCard(ch.doc.id);
+      });
+      refreshTally();
+    }, err => {
+      clearTimeout(timer);
+      settled = true;
+      setNote("Les verdicts ne se chargent pas (" + err.code + ").", true);
+    });
+    refreshAll();
+  }
+
+  function save(id, body) {
+    const it = byId.get(id);
+    const empty = !body.verdict && !body.tags.length && !body.note;
+    const full = Object.assign({}, body, {
+      label: it.y === 1 ? "whistle" : "noise", recording: it.rec, onset: it.on, file: it.file,
+      wrong_models: M.filter((m, k) => it.wrong[k]).map(m => m.key), updated: new Date().toISOString(),
+    });
+    if (empty) verdicts.delete(id); else verdicts.set(id, full);
+    refreshCard(id);
+    refreshTally();
+    if (store.kind === "local") { saveLocal(); return; }
+    if (store.kind !== "db") return;
+    const ref = store.db.doc("verdicts/" + id);
+    const next = (chains.get(id) || Promise.resolve())
+      .then(() => (empty ? ref.delete() : ref.set(full)))
+      .catch(e => {
+        if (e && e.code === "invalid_argument") { store.writable = false; setNote("Lecture seule : ce verdict n'a pas été enregistré.", true); refreshAll(); }
+        else toast("Verdict non enregistré (" + (e && e.code ? e.code : "erreur") + "). Réessayez dans un instant.");
+      });
+    chains.set(id, next);
+  }
+
+  // ---------- list ----------
+  let filtered = [];
+  let shown = 0;
+  const list = document.getElementById("list");
+  const moreBtn = document.getElementById("more-btn");
+  const countEl = document.getElementById("count");
+
+  function applyFilters() {
+    const [panel, type, status, rec, sort, round] = controls.map(c => c.value);
+    filtered = items.filter(it => {
+      if (panel === "any" && !PANEL.some(k => it.wrong[IDX[k]])) return false;
+      if (panel === "all" && !PANEL.every(k => it.wrong[IDX[k]])) return false;
+      if (panel !== "any" && panel !== "all" && !it.wrong[IDX[panel]]) return false;
+      if (type !== "all" && it.type !== type) return false;
+      if (rec !== "all" && it.rec !== rec) return false;
+      if (round !== "all" && String(it.r) !== round) return false;
+      if (status === "todo" && isReviewed(it.id)) return false;
+      if (status === "done" && !isReviewed(it.id)) return false;
+      return true;
+    });
+    if (sort === "strength") filtered.sort((a, b) => b.strength - a.strength);
+    else if (sort === "agree") filtered.sort((a, b) => b.nWrong - a.nWrong || b.strength - a.strength);
+    else filtered.sort((a, b) => a.rec.localeCompare(b.rec) || a.on - b.on);
+    list.textContent = "";
+    shown = 0;
+    showMore();
+    const nMiss = filtered.filter(it => it.type === "miss").length;
+    countEl.textContent = `${filtered.length} fenêtres · ${nMiss} sifflements manqués · ${filtered.length - nMiss} fausses alarmes`;
+    if (!filtered.length) {
+      const p = document.createElement("p");
+      p.className = "empty";
+      p.textContent = "Aucune fenêtre ne correspond à ces filtres.";
+      list.appendChild(p);
+    }
+  }
+  function showMore() {
+    filtered.slice(shown, shown + PAGE).forEach(it => list.appendChild(buildCard(it)));
+    shown = Math.min(filtered.length, shown + PAGE);
+    moreBtn.hidden = shown >= filtered.length;
+    moreBtn.textContent = `Afficher ${Math.min(PAGE, filtered.length - shown)} fenêtres de plus`;
+  }
+  moreBtn.addEventListener("click", showMore);
+  controls.forEach(c => c.addEventListener("change", () => { rememberFilters(); applyFilters(); }));
+  fColor.addEventListener("change", () => {
+    rememberFilters();
+    list.querySelectorAll(".card").forEach(card => { if (card._drawn) drawCard(card, byId.get(card.dataset.id)); });
+  });
+
+  function el(tag, cls, text) {
+    const e = document.createElement(tag);
+    if (cls) e.className = cls;
+    if (text !== undefined) e.textContent = text;
+    return e;
+  }
+  function axis(ticks) {
+    const a = el("div", "axis");
+    ticks.forEach(([label, top]) => { const s = el("span", null, label); s.style.top = top + "%"; a.appendChild(s); });
+    return a;
+  }
+  function scoreRow(m, k, it) {
+    const row = el("div", "score-row" + (it.wrong[k] ? " wrong" : ""));
+    row.appendChild(el("span", "mname", m.name)).title = m.name;
+    const bar = el("span", "bar");
+    const fill = el("i");
+    fill.style.width = (100 * it.s[k]).toFixed(1) + "%";
+    bar.appendChild(fill);
+    bar.appendChild(el("b"));
+    row.appendChild(bar);
+    row.appendChild(el("span", "sval", fmt(it.s[k])));
+    return row;
+  }
+
+  function buildCard(it) {
+    const card = el("article", "card");
+    card.dataset.id = it.id;
+    card.id = "card-" + it.id;
+    const head = el("header", "card-head");
+    head.appendChild(el("span", "pill " + it.type, it.type === "miss" ? "Sifflement manqué" : "Fausse alarme"));
+    head.appendChild(el("span", "where", `${it.rec} · ${fmt(it.on, 1)}–${fmt(it.off, 1)} s`));
+    head.appendChild(el("span", "status"));
+    card.appendChild(head);
+    const other = el("p", "other" + (it.oc && it.oc.found ? " found" : ""), it.oc ? it.oc.text : "");
+    card.appendChild(other);
+
+    const figs = el("div", "figs");
+    const f1 = el("figure");
+    const p1 = el("div", "plot");
+    p1.appendChild(axis([["20", 10], ["15", 35], ["10", 60], ["5", 85]]));
+    const b1 = el("div", "canvas-box model");
+    const c1 = document.createElement("canvas");
+    c1.width = 224; c1.height = 224;
+    c1.setAttribute("role", "img");
+    c1.setAttribute("aria-label", "Spectrogramme de 2 à 22 kHz vu par le modèle");
+    b1.appendChild(c1);
+    b1.appendChild(el("div", "loading", "Chargement…"));
+    p1.appendChild(b1);
+    f1.appendChild(p1);
+    f1.appendChild(el("figcaption", null, "Image du modèle · 2–22 kHz · 0,4 s"));
+    const f2 = el("figure");
+    const p2 = el("div", "plot");
+    p2.appendChild(axis([["40", 100 * 8 / 48], ["30", 100 * 18 / 48], ["20", 100 * 28 / 48], ["10", 100 * 38 / 48]]));
+    const b2 = el("div", "canvas-box full");
+    const c2 = document.createElement("canvas");
+    c2.setAttribute("role", "img");
+    c2.setAttribute("aria-label", "Spectrogramme complet de 0 à 48 kHz");
+    b2.appendChild(c2);
+    b2.appendChild(el("div", "loading", "Chargement…"));
+    p2.appendChild(b2);
+    f2.appendChild(p2);
+    f2.appendChild(el("figcaption", null, "Spectrogramme 0–48 kHz · pointillés : 2 et 22 kHz"));
+    figs.appendChild(f1);
+    figs.appendChild(f2);
+    card.appendChild(figs);
+
+    const listen = el("div", "listen");
+    [["Écouter", 1], ["Écouter ralenti ×¼", 0.25]].forEach(([label, rate]) => {
+      const b = el("button", "btn", label);
+      b.type = "button";
+      b.addEventListener("click", () => play(it.id, rate, b));
+      listen.appendChild(b);
+    });
+    listen.appendChild(el("span", "hint", "volume normalisé"));
+    card.appendChild(listen);
+
+    const scores = el("div", "scores");
+    PANEL.forEach(key => scores.appendChild(scoreRow(M[IDX[key]], IDX[key], it)));
+    card.appendChild(scores);
+    const all = el("details", "all");
+    all.appendChild(el("summary", null, `Les ${M.length} modèles : ${it.nWrong} en désaccord avec l'étiquette « ${it.y === 1 ? "sifflement" : "bruit"} »`));
+    const allBox = el("div", "scores");
+    M.forEach((m, k) => { if (!m.panel) allBox.appendChild(scoreRow(m, k, it)); });
+    all.appendChild(allBox);
+    card.appendChild(all);
+
+    const vbox = el("div", "verdict");
+    vbox.setAttribute("role", "group");
+    vbox.setAttribute("aria-label", "Verdict");
+    VERDICTS.forEach(([v, label]) => {
+      const b = el("button", "btn", label);
+      b.type = "button";
+      b.dataset.v = v;
+      b.addEventListener("click", () => {
+        const cur = current(it.id);
+        cur.verdict = cur.verdict === v ? "" : v;
+        save(it.id, cur);
+      });
+      vbox.appendChild(b);
+    });
+    card.appendChild(vbox);
+    const tbox = el("div", "tags");
+    tbox.setAttribute("role", "group");
+    tbox.setAttribute("aria-label", "Observations");
+    TAGS.forEach(([t, label]) => {
+      const b = el("button", "btn", label);
+      b.type = "button";
+      b.dataset.t = t;
+      b.addEventListener("click", () => {
+        const cur = current(it.id);
+        cur.tags = cur.tags.includes(t) ? cur.tags.filter(x => x !== t) : cur.tags.concat(t);
+        save(it.id, cur);
+      });
+      tbox.appendChild(b);
+    });
+    card.appendChild(tbox);
+    const nbox = el("div", "note");
+    const lab = el("label", null, "Note");
+    lab.htmlFor = "note-" + it.id;
+    const input = document.createElement("input");
+    input.type = "text";
+    input.id = "note-" + it.id;
+    input.placeholder = "Ce que vous voyez ou entendez";
+    input.addEventListener("change", () => {
+      const cur = current(it.id);
+      cur.note = input.value.trim();
+      save(it.id, cur);
+    });
+    nbox.appendChild(lab);
+    nbox.appendChild(input);
+    card.appendChild(nbox);
+
+    refreshCardEl(card, it.id);
+    observer.observe(card);
+    return card;
+  }
+  function current(id) {
+    const v = verdicts.get(id) || {};
+    return { verdict: v.verdict || "", tags: Array.isArray(v.tags) ? v.tags.slice() : [], note: v.note || "" };
+  }
+  function refreshCard(id) {
+    const card = document.getElementById("card-" + id);
+    if (card) refreshCardEl(card, id);
+  }
+  function refreshCardEl(card, id) {
+    const v = current(id);
+    const reviewed = isReviewed(id);
+    card.classList.toggle("reviewed", reviewed);
+    card.querySelector(".status").textContent = reviewed ? "Revue" : "À revoir";
+    card.querySelectorAll(".verdict .btn").forEach(b => { b.setAttribute("aria-pressed", String(v.verdict === b.dataset.v)); b.disabled = !store.writable; });
+    card.querySelectorAll(".tags .btn").forEach(b => { b.setAttribute("aria-pressed", String(v.tags.includes(b.dataset.t))); b.disabled = !store.writable; });
+    const input = card.querySelector(".note input");
+    if (document.activeElement !== input) input.value = v.note;
+    input.disabled = !store.writable;
+  }
+  function refreshTally() {
+    const counts = { model: 0, label: 0, unsure: 0 };
+    let reviewed = 0;
+    const tagCounts = {};
+    items.forEach(it => {
+      if (!isReviewed(it.id)) return;
+      reviewed += 1;
+      const v = current(it.id);
+      if (counts[v.verdict] !== undefined) counts[v.verdict] += 1;
+      v.tags.forEach(t => { tagCounts[t] = (tagCounts[t] || 0) + 1; });
+    });
+    document.getElementById("reviewed-count").textContent = reviewed;
+    document.getElementById("progress-bar").style.width = (100 * reviewed / items.length).toFixed(1) + "%";
+    const rows = document.getElementById("tally-rows");
+    rows.textContent = "";
+    VERDICTS.forEach(([v, label]) => { rows.appendChild(el("span", null, label)); rows.appendChild(el("span", "num", String(counts[v]))); });
+    TAGS.forEach(([t, label]) => { if (tagCounts[t]) { rows.appendChild(el("span", null, label)); rows.appendChild(el("span", "num", String(tagCounts[t]))); } });
+  }
+  function refreshAll() {
+    list.querySelectorAll(".card").forEach(card => refreshCardEl(card, card.dataset.id));
+    refreshTally();
+  }
+
+  // ---------- audio and spectrograms ----------
+  const cache = new Map();
+  function b64(s) {
+    const bin = atob(s);
+    const out = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+    return out;
+  }
+  function parseWav(bytes) {
+    const dv = new DataView(bytes.buffer);
+    const tag = o => String.fromCharCode(bytes[o], bytes[o + 1], bytes[o + 2], bytes[o + 3]);
+    if (tag(0) !== "RIFF" || tag(8) !== "WAVE") throw new Error("not a WAV file");
+    let o = 12, fmtCode = 1, channels = 1, sr = 96000, bits = 16, data = null;
+    while (o + 8 <= bytes.length) {
+      const id = tag(o), size = dv.getUint32(o + 4, true);
+      if (id === "fmt ") {
+        fmtCode = dv.getUint16(o + 8, true); channels = dv.getUint16(o + 10, true);
+        sr = dv.getUint32(o + 12, true); bits = dv.getUint16(o + 22, true);
+      } else if (id === "data") { data = [o + 8, Math.min(size, bytes.length - o - 8)]; break; }
+      o += 8 + size + (size % 2);
+    }
+    if (!data) throw new Error("no audio data");
+    const step = bits / 8 * channels;
+    const n = Math.floor(data[1] / step);
+    const pcm = new Float32Array(n);
+    for (let i = 0; i < n; i++) {
+      const p = data[0] + i * step;
+      pcm[i] = fmtCode === 3 ? dv.getFloat32(p, true) : bits === 16 ? dv.getInt16(p, true) / 32768 : bits === 32 ? dv.getInt32(p, true) / 2147483648 : (bytes[p] - 128) / 128;
+    }
+    return { pcm, sr };
+  }
+  const files = new Map();
+  function fetchFile(path) {
+    if (!files.has(path)) {
+      files.set(path, fetch(path).then(r => {
+        if (!r.ok) throw new Error("HTTP " + r.status);
+        return r.json();
+      }).catch(e => { files.delete(path); throw e; }));
+    }
+    return files.get(path);
+  }
+  function loadItem(id) {
+    if (!cache.has(id)) {
+      const it = byId.get(id);
+      cache.set(id, fetchFile(it.f).then(j => j[id]).then(async j => {
+        const img = new Image();
+        img.src = "data:image/png;base64," + j.png;
+        await img.decode();
+        const { pcm, sr } = parseWav(b64(j.wav));
+        let peak = 0;
+        for (let i = 0; i < pcm.length; i++) peak = Math.max(peak, Math.abs(pcm[i]));
+        const play = new Float32Array(pcm.length);
+        const g = peak > 0 ? 0.9 / peak : 1;
+        for (let i = 0; i < pcm.length; i++) play[i] = pcm[i] * g;
+        return { img, pcm, play, sr, spec: null };
+      }).catch(e => { cache.delete(id); throw e; }));
+    }
+    return cache.get(id);
+  }
+
+  const N = 1024, HOP = 128;
+  const hann = new Float64Array(N).map((_, n) => 0.5 - 0.5 * Math.cos(2 * Math.PI * n / N));
+  const rev = new Uint32Array(N);
+  for (let i = 0, bitsN = Math.log2(N); i < N; i++) { let r = 0; for (let b = 0; b < bitsN; b++) r |= ((i >> b) & 1) << (bitsN - 1 - b); rev[i] = r; }
+  const cosT = new Float64Array(N / 2).map((_, k) => Math.cos(-2 * Math.PI * k / N));
+  const sinT = new Float64Array(N / 2).map((_, k) => Math.sin(-2 * Math.PI * k / N));
+  function fft(re, im) {
+    for (let i = 0; i < N; i++) { const j = rev[i]; if (j > i) { let t = re[i]; re[i] = re[j]; re[j] = t; t = im[i]; im[i] = im[j]; im[j] = t; } }
+    for (let size = 2; size <= N; size <<= 1) {
+      const half = size >> 1, step = N / size;
+      for (let s = 0; s < N; s += size) {
+        for (let k = 0; k < half; k++) {
+          const wr = cosT[k * step], wi = sinT[k * step];
+          const a = s + k, b = a + half;
+          const xr = re[b] * wr - im[b] * wi, xi = re[b] * wi + im[b] * wr;
+          re[b] = re[a] - xr; im[b] = im[a] - xi; re[a] += xr; im[a] += xi;
+        }
+      }
+    }
+  }
+  function spectrogram(pcm) {
+    const frames = Math.max(1, Math.floor((pcm.length - N) / HOP) + 1), bins = N / 2 + 1;
+    const out = new Float32Array(frames * bins);
+    const re = new Float64Array(N), im = new Float64Array(N);
+    for (let f = 0; f < frames; f++) {
+      for (let n = 0; n < N; n++) { re[n] = (pcm[f * HOP + n] || 0) * hann[n]; im[n] = 0; }
+      fft(re, im);
+      for (let k = 0; k < bins; k++) out[f * bins + k] = 10 * Math.log10(re[k] * re[k] + im[k] * im[k] + 1e-20);
+    }
+    const sample = Array.from(out.filter((_, i) => i % 7 === 0)).sort((a, b) => a - b);
+    const lo = sample[Math.floor(0.02 * (sample.length - 1))], hi = sample[Math.floor(0.998 * (sample.length - 1))];
+    return { frames, bins, out, lo, hi };
+  }
+  const STOPS = [[0, [68, 1, 84]], [0.25, [59, 82, 139]], [0.5, [33, 145, 140]], [0.75, [94, 201, 98]], [1, [253, 231, 37]]];
+  const LUT = new Uint8Array(256 * 3);
+  for (let i = 0; i < 256; i++) {
+    const t = i / 255;
+    let j = 0;
+    while (j < STOPS.length - 2 && t > STOPS[j + 1][0]) j++;
+    const [t0, c0] = STOPS[j], [t1, c1] = STOPS[j + 1];
+    const u = (t - t0) / (t1 - t0);
+    for (let c = 0; c < 3; c++) LUT[i * 3 + c] = Math.round(c0[c] + u * (c1[c] - c0[c]));
+  }
+  function paint(px, value, color) {
+    if (color) { px[0] = LUT[value * 3]; px[1] = LUT[value * 3 + 1]; px[2] = LUT[value * 3 + 2]; }
+    else { px[0] = px[1] = px[2] = value; }
+  }
+  function drawCard(card, it) {
+    const data = card._data;
+    if (!data) return;
+    const color = fColor.checked;
+    const c1 = card.querySelector(".canvas-box.model canvas");
+    const x1 = c1.getContext("2d");
+    x1.drawImage(data.img, 0, 0, 224, 224);
+    const im1 = x1.getImageData(0, 0, 224, 224);
+    for (let p = 0; p < im1.data.length; p += 4) paint(im1.data.subarray(p, p + 3), im1.data[p], color);
+    x1.putImageData(im1, 0, 0);
+
+    if (!data.spec) data.spec = spectrogram(data.pcm);
+    const { frames, bins, out, lo, hi } = data.spec;
+    const c2 = card.querySelector(".canvas-box.full canvas");
+    c2.width = frames; c2.height = bins;
+    const x2 = c2.getContext("2d");
+    const im2 = x2.createImageData(frames, bins);
+    const span = Math.max(1e-6, hi - lo);
+    for (let f = 0; f < frames; f++) {
+      for (let k = 0; k < bins; k++) {
+        const v = Math.max(0, Math.min(255, Math.round(255 * (out[f * bins + k] - lo) / span)));
+        const p = ((bins - 1 - k) * frames + f) * 4;
+        paint(im2.data.subarray(p, p + 3), v, color);
+        im2.data[p + 3] = 255;
+      }
+    }
+    x2.putImageData(im2, 0, 0);
+    const binHz = data.sr / N;
+    x2.strokeStyle = "rgba(255, 255, 255, 0.75)";
+    x2.setLineDash([6, 4]);
+    x2.lineWidth = 1.5;
+    [2000, 22000].forEach(hz => { const y = bins - 1 - hz / binHz; x2.beginPath(); x2.moveTo(0, y); x2.lineTo(frames, y); x2.stroke(); });
+    card.querySelectorAll(".loading").forEach(l => l.remove());
+    card._drawn = true;
+  }
+  const observer = new IntersectionObserver(entries => {
+    entries.forEach(entry => {
+      if (!entry.isIntersecting) return;
+      const card = entry.target;
+      observer.unobserve(card);
+      const it = byId.get(card.dataset.id);
+      loadItem(it.id).then(data => { card._data = data; drawCard(card, it); })
+        .catch(() => card.querySelectorAll(".loading").forEach(l => { l.textContent = "Audio et image indisponibles"; }));
+    });
+  }, { rootMargin: "800px 0px" });
+
+  let actx = null, playing = null;
+  function play(id, rate, btn) {
+    try {
+      if (!actx) actx = new (window.AudioContext || window.webkitAudioContext)();
+      if (actx.state === "suspended") actx.resume();
+    } catch (e) { toast("La lecture audio n'est pas disponible dans cette vue."); return; }
+    if (playing) { try { playing.src.stop(); } catch (e) { /* already stopped */ } }
+    const wasSame = playing && playing.btn === btn;
+    playing = null;
+    if (wasSame) return;
+    loadItem(id).then(data => {
+      const buf = actx.createBuffer(1, data.play.length, data.sr);
+      buf.copyToChannel(data.play, 0);
+      const src = actx.createBufferSource();
+      src.buffer = buf;
+      src.playbackRate.value = rate;
+      src.connect(actx.destination);
+      const label = btn.textContent;
+      btn.textContent = "■ Arrêter";
+      btn.setAttribute("aria-pressed", "true");
+      const me = { src, btn };
+      src.onended = () => { btn.textContent = label; btn.removeAttribute("aria-pressed"); if (playing === me) playing = null; };
+      playing = me;
+      src.start();
+    }).catch(() => toast("Audio indisponible pour cette fenêtre."));
+  }
+
+  // ---------- export and toast ----------
+  let toastTimer = null;
+  function toast(text) {
+    let t = document.querySelector(".toast");
+    if (!t) { t = el("div", "toast"); t.setAttribute("role", "status"); document.body.appendChild(t); }
+    t.textContent = text;
+    t.hidden = false;
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => { t.hidden = true; }, 4000);
+  }
+  document.getElementById("export-btn").addEventListener("click", () => {
+    const rows = items.filter(it => isReviewed(it.id)).map(it => Object.assign({ id: it.id }, current(it.id)));
+    const text = JSON.stringify(rows);
+    const box = document.getElementById("export-box");
+    const fallback = () => { box.hidden = false; box.value = text; box.focus(); box.select(); toast("Sélectionnez le texte puis copiez-le."); };
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(() => toast(rows.length + " verdicts copiés."), fallback);
+    } else fallback();
+  });
+
+  applyFilters();
+  refreshTally();
+  initStore();
+})();
+</script>
