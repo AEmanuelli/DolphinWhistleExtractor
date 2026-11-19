@@ -12,6 +12,7 @@ scipy==1.13.1
 soundfile>=0.12
 tensorflow==2.17.0
 tqdm==4.66.2
-# Optional, only to run the PyTorch VGG16 checkpoint of the OpenWhistle paper:
+# Optional, for PyTorch checkpoints (the OpenWhistle paper's VGG16, models trained with
+# Train_model/train_openwhistle.py) and for training (also needs pyarrow):
 # torch
 # torchvision

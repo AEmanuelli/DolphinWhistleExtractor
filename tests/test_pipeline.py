@@ -1,3 +1,4 @@
+import cv2
 import numpy as np
 import pandas as pd
 import pytest
@@ -96,7 +97,8 @@ def test_detector_sees_paper_spectrograms(wav_file, tmp_path, monkeypatch):
     (batch,) = detector.batches
     assert batch.shape == (10, 24, 32, 3) and batch.dtype == np.float32 and batch.max() > 1  # raw 0-255
     fs, x = utils.prepare_audio(*reversed(utils.load_audio(str(wav_file))))
-    expected = utils.spectrogram_image(x[38400:76800], fs, size=FakeDetector.image_size)
+    # drawn at the 224x224 size of the dataset images, then resized to the model input
+    expected = cv2.resize(utils.spectrogram_image(x[38400:76800], fs, size=(224, 224)), FakeDetector.image_size)
     assert np.array_equal(batch[1], expected.astype(np.float32))  # second window: 0.4-0.8 s
     assert len(list((tmp_path / "out" / wav_file.stem / "all").glob("*.jpg"))) == 10
 
@@ -178,3 +180,18 @@ def test_cli_end_to_end_with_extraction(wav_file, tmp_path, fake_model, monkeypa
     assert code == 0
     assert (out / wav_file.stem / f"{wav_file.stem}.wav_predictions.csv").exists()
     assert (out / "extracted_audio").is_dir()
+
+
+def test_detector_trained_on_an_audio_frontend_sees_its_images(wav_file, tmp_path, monkeypatch):
+    import frontends
+    import utils
+
+    detector = FakeDetector()
+    detector.frontend = "whiten"
+    monkeypatch.setattr(pipeline, "WhistleDetector", lambda model_path: detector)
+    run(wav_file, tmp_path / "out", batch_size=50)
+
+    (batch,) = detector.batches
+    fs, x = utils.prepare_audio(*reversed(utils.load_audio(str(wav_file))))
+    expected = cv2.resize(frontends.window_images("whiten", x[None, 38400:76800], fs)[0], FakeDetector.image_size)
+    assert np.array_equal(batch[1], np.repeat(expected[..., None], 3, axis=2).astype(np.float32))
