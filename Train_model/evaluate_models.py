@@ -119,6 +119,9 @@ def predict(detector, images, scale="raw", batch_size=64):
     import cv2
     from predict_and_extract_online import positive_scores
 
+    if getattr(detector, "frontend", "paper") != "paper":
+        raise ValueError("This model was trained on another front-end than the dataset images: "
+                         "use Train_model/train_openwhistle.py test")
     width, height = detector.image_size
     if getattr(detector, "handles_normalization", False):
         scale = "raw"  # the detector normalises 0-255 images itself

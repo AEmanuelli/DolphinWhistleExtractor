@@ -244,9 +244,10 @@ python Predict_and_extract/main.py --recordings /path/to/recordings --saving_fol
 
 Architectures range from small CNNs trained from scratch (11 k parameters, about 1 ms per window on one CPU
 thread, for real-time detection on a Raspberry Pi) to ImageNet-pretrained MobileNet, EfficientNet and ResNet
-backbones. The sweep of the repository looks both for a model better than `base_MobileNetV2` and for the smallest
-model above 95% accuracy. Protocol, options, model sizes and training times on a laptop GPU:
-[docs/TRAINING.md](docs/TRAINING.md).
+backbones. The sweeps of the repository look both for a model better than `base_MobileNetV2` and for the smallest
+model above 95% accuracy; they also measure label noise with out-of-fold scores, and compare audio front-ends and
+small architectures from keyword spotting. Protocol, options, model sizes, training times on a laptop GPU and the
+validation results so far: [docs/TRAINING.md](docs/TRAINING.md).
 
 ## 🧪 Tests
 

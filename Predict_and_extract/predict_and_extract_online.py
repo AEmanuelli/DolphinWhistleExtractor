@@ -131,6 +131,8 @@ class TorchWhistleDetector:
 
         size = int(metadata.get("img_size", 224) or 224)
         self.image_size = (size, size)
+        # input spectrograms: "paper" (the OpenWhistle images) or an audio front-end of frontends.py
+        self.frontend = metadata.get("frontend", "paper")
         normalization = metadata.get("normalization") or {}
         mean = normalization.get("mean") or IMAGENET_MEAN
         std = normalization.get("std") or IMAGENET_STD
@@ -249,8 +251,16 @@ def process_and_predict(file_path: str, config: ProcessingConfig,
         batch_starts = starts[first:first + config.batch_size]
         # Spectrograms are drawn at the 224x224 size of the OpenWhistle-CNN images, then resized to the
         # model input (prepare_image_batch) like the training script does for models trained at another size.
-        images = [spectrogram_image(x[low:low + samples_per_window], fs, settings, DATASET_IMAGE_SIZE)
-                  for low in batch_starts]
+        frontend = getattr(detector, "frontend", "paper")
+        if frontend == "paper":
+            images = [spectrogram_image(x[low:low + samples_per_window], fs, settings, DATASET_IMAGE_SIZE)
+                      for low in batch_starts]
+        else:  # a model trained on another front-end gets the same images as in training
+            import frontends
+            if samples_per_window != frontends.WINDOW_SAMPLES or fs != frontends.SAMPLE_RATE:
+                raise ValueError(f"The {frontend!r} front-end needs 0.4 s windows at 96 kHz (--spectrogram paper)")
+            images = list(frontends.window_images(frontend, np.stack([x[low:low + samples_per_window]
+                                                                      for low in batch_starts]), fs))
         batch_start = start_time + first * settings.window_hop
 
         if config.save_all_images:

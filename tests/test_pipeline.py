@@ -180,3 +180,18 @@ def test_cli_end_to_end_with_extraction(wav_file, tmp_path, fake_model, monkeypa
     assert code == 0
     assert (out / wav_file.stem / f"{wav_file.stem}.wav_predictions.csv").exists()
     assert (out / "extracted_audio").is_dir()
+
+
+def test_detector_trained_on_an_audio_frontend_sees_its_images(wav_file, tmp_path, monkeypatch):
+    import frontends
+    import utils
+
+    detector = FakeDetector()
+    detector.frontend = "whiten"
+    monkeypatch.setattr(pipeline, "WhistleDetector", lambda model_path: detector)
+    run(wav_file, tmp_path / "out", batch_size=50)
+
+    (batch,) = detector.batches
+    fs, x = utils.prepare_audio(*reversed(utils.load_audio(str(wav_file))))
+    expected = cv2.resize(frontends.window_images("whiten", x[None, 38400:76800], fs)[0], FakeDetector.image_size)
+    assert np.array_equal(batch[1], np.repeat(expected[..., None], 3, axis=2).astype(np.float32))

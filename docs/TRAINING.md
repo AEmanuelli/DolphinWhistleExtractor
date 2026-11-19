@@ -30,6 +30,10 @@ python Train_model/train_openwhistle.py prepare
 `evaluate_models.py`) and decodes the spectrograms once into uint8 `.npy` files (about 3.6 GB), which training then
 reads from disk.
 
+`prepare --frontends wide whiten pcen` also computes, from the audio of each window, the images of the other input
+representations of [`Predict_and_extract/frontends.py`](../Predict_and_extract/frontends.py) (about 3.6 GB each, see
+`--frontend` below).
+
 ## 2. One training run
 
 ```bash
@@ -45,20 +49,49 @@ What a run does:
     `resnet18`, `resnet50`, `convnext_tiny`, or `vgg16_openwhistle` (the architecture of the paper);
   - or a small CNN for embedded devices, trained from scratch: `tinycnn_8`, `tinycnn_16`, `tinycnn_32`,
     `tinycnn_64` (a strided convolution, then 4 stages of depthwise-separable convolutions whose width doubles
-    from 8 / 16 / 32 / 64 channels; 11 k to 546 k parameters).
+    from 8 / 16 / 32 / 64 channels; 11 k to 546 k parameters);
+  - or a small network from keyword spotting and sound event detection, also trained from scratch:
+    `tinycnn_16_coord` and `tinycnn_32_coord` (the small CNN with a second input channel giving the frequency of
+    each row), `bcresnet_1` to `bcresnet_8` (BC-ResNet, Kim et al. 2021: frequency-wise depthwise convolutions with
+    sub-spectral normalisation, then time-wise convolutions broadcast over frequency; 8 k to 310 k parameters),
+    `crnn_8` and `crnn_16` (4 convolution blocks, then a bidirectional GRU over time), `fdycrnn_8` and `fdycrnn_16`
+    (the same CRNN with frequency dynamic convolutions, Nam et al. 2022: each frequency row mixes 4 kernels with its
+    own attention weights).
 - **Input**: the grayscale spectrogram replicated on 3 channels, scaled to 0–1 and normalised with the ImageNet
   mean / std, as in the paper. `--img_size` trains at a lower resolution (e.g. 112 or 64): the 224×224 images are
   resized bilinearly, and the pipeline does the same with the size stored in the checkpoint.
+- **Input representation** (`--frontend`, after `prepare --frontends`): `paper` (default, the dataset's
+  2–22 kHz spectrograms), or images computed from the audio over 2–48 kHz (224 bands, 1024-sample Blackman
+  window): `wide` (log power), `whiten` (log power minus the median of each band over the window, then of each
+  frame, which removes stationary tonal noise and broadband clicks) or `pcen` (per-channel energy normalisation,
+  Wang et al. 2017). The checkpoint stores its front-end and the pipeline computes the same images (0.4 s windows
+  at 96 kHz).
 - **Optimisation**: AdamW, cross-entropy, linear warm-up then cosine decay of the learning rate, batch size 32.
+  `--loss gce` uses the generalised cross-entropy (Zhang & Sabuncu 2018, `--gce_q`), which is less sensitive to
+  wrong labels; `--ema 0.999` evaluates and saves an exponential moving average of the weights.
+- **Label noise and dataset diagnostics**:
+  - `--cv_folds 5 --cv_fold k` trains on 4/5 of the train recordings (folds balanced in windows, no recording
+    split between folds) and saves the scores of the remaining fold (`oof_scores.npy`, `oof_indices.npy`). The 5
+    runs together give every train window an out-of-fold score: a window whose score contradicts its label with
+    high confidence is a candidate label error;
+  - `--exclude_runs <the 5 fold runs> --exclude_threshold 0.9` trains without the train windows whose out-of-fold
+    score contradicts the label by at least 0.9;
+  - `--soft_source oof --soft_runs <the 5 fold runs> --soft_weight 0.5` mixes the hard labels with the out-of-fold
+    scores as soft targets; `--soft_source teacher --soft_runs <run>` distils a trained model instead (same
+    front-end), with `--distill_temperature`;
+  - `--exclude_recordings channel_1` leaves out the train recordings whose name contains one of the given strings.
 - **Augmentation** (optional, on the GPU): circular time shift (`--time_shift`, fraction of the window), small
   frequency shift (`--freq_shift`, pixels), SpecAugment time / frequency masks (`--time_masks`, `--freq_masks`,
   `--mask_width`), mixup (`--mixup`), label smoothing (`--label_smoothing`).
 - **Model selection**: after each epoch the model is scored on the validation split; `best.pt` is the epoch with the
   lowest validation loss, as in the paper. Training stops early after `--patience` epochs without improvement.
 - **Outputs** in `--out`: `best.pt`, `history.csv` (losses and validation metrics per epoch), `summary.json`
-  (best epoch, and the cost of the model: parameters, multiply-adds per image, median latency of one image on one
-  CPU thread). An interrupted run resumes from its last finished epoch (`last.pt`) when relaunched with the same
-  command.
+  (best epoch, validation accuracy per recording type: single-channel 2021 recordings, `channel_0` and
+  `channel_1` of the 2023–2024 multichannel recordings, and the cost of the model: parameters, multiply-adds per
+  image, median latency of one image on one CPU thread), and `best_validation_scores.npy` (the score of every
+  validation window at the best epoch, so that runs can be compared window by window, or re-scored after a label
+  correction, without recomputing them). An interrupted run resumes from its last finished epoch (`last.pt`) when
+  relaunched with the same command.
 - **Tracking** (optional): `--wandb_project <name>` also logs the configuration, the per-epoch metrics and the cost
   of the model to [Weights & Biases](https://wandb.ai) (`pip install wandb`, `wandb login`); an interrupted run
   continues the same W&B run.
@@ -107,6 +140,66 @@ slower, which still leaves a wide margin for the small models.
 
 Choosing the small model: take the smallest one whose **validation** accuracy clears the target with some margin
 (the test split is recorded in other years, 2019–2020, and can be harder), then check it once on the test split.
+
+### Sweeps 2 and 3
+
+The first sweep was stopped after 10 of its 15 runs, because its results pointed elsewhere: augmentation did not
+help, and all the models failed on largely the same validation windows (154 windows are misclassified by all 9 models
+compared, 126 of them labelled whistle).
+
+- [`openwhistle_sweep2_broad.json`](../Train_model/sweeps/openwhistle_sweep2_broad.json) was stopped after its first
+  5 runs: a 5-fold cross-validation of `tinycnn_32` at 112 px over the train recordings, which gives every train
+  window an out-of-fold score (validation accuracy of the 5 fold models: 94.5–94.8%; out-of-fold accuracy on the
+  train split: 95.7%, with 1,183 train windows contradicted by a score of at least 0.9).
+- [`openwhistle_sweep3_focused.json`](../Train_model/sweeps/openwhistle_sweep3_focused.json) uses these scores, and
+  repeats the reference configuration with 3 seeds to measure the seed-to-seed spread.
+
+### Results so far (validation split)
+
+The test split has not been used yet. Validation accuracy at the best-validation-loss epoch; `tinycnn_32` at 112 px
+without augmentation unless stated (142 k parameters, 7.3 M multiply-adds, about 2 ms per window on one laptop CPU
+thread).
+
+| Group | Run | Parameters | Validation accuracy |
+|---|---|---|---|
+| Sweep 1, best models | `mobilenet_v2` @ 224 px, time shifts + SpecAugment | 2.2 M | 95.65% |
+| | `tinycnn_32`, no augmentation | 142 k | 95.30% |
+| | `tinycnn_32`, time shifts + SpecAugment | 142 k | 94.18% |
+| | `resnet18` @ 224 px, time shifts + SpecAugment | 11.2 M | 94.63% |
+| | `tinycnn_8`, time shifts + SpecAugment | 11 k | 93.49% |
+| Reference, 3 seeds | `tinycnn_32` | 142 k | 95.00 / 94.85 / 94.80% |
+| Label noise | soft out-of-fold targets, 2 seeds | 142 k | 95.30 / 95.38% |
+| | without the windows contradicted ≥ 0.9, 2 seeds | 142 k | 95.30 / 94.83% |
+| | without the windows contradicted ≥ 0.7 | 142 k | 94.72% |
+| | generalised cross-entropy | 142 k | 92.86% |
+| Distillation | `tinycnn_32` taught by `mobilenet_v2` (below) | 142 k | 95.40% |
+| | `bcresnet_2` taught by `mobilenet_v2` | 24 k | 93.46% |
+| Large model | `mobilenet_v2` @ 224 px, no augmentation | 2.2 M | 95.22% |
+| | `mobilenet_v2` @ 224 px, without the windows contradicted ≥ 0.9 (stopped during epoch 5) | 2.2 M | 95.10% |
+| Architectures | `tinycnn_32_coord` | 142 k | 95.27% |
+| | `fdycrnn_8` | 67 k | 94.15% |
+| | `crnn_16` | 79 k | 93.61% |
+| | `bcresnet_4` / `bcresnet_2` | 84 k / 24 k | 93.46 / 93.16% |
+| Input representation | `whiten`, 2 seeds | 142 k | 93.60 / 93.56% |
+| | `wide`, 2 seeds | 142 k | 92.66 / 92.36% |
+| | `pcen`, 2 seeds | 142 k | 91.86 / 91.44% |
+| Training recordings | without the `channel_1` recordings | 142 k | 89.46% |
+| | single-channel 2021 recordings only | 142 k | 84.33% |
+
+What these runs show so far:
+
+- Seeds of the same configuration differ by 0.1 to 0.5 points (0.2 for the reference), so differences of a few
+  tenths of a point are not meaningful.
+- A 142 k-parameter CNN is within 0.25–0.35 points of the best MobileNetV2 (2.2 M parameters, 40 times more
+  multiply-adds).
+- The best small models come from handling label noise: soft out-of-fold targets or distillation reach 95.3–95.4%,
+  about 0.5 points above the mean of the reference seeds (94.9%), which is at the edge of the seed spread.
+  Generalised cross-entropy and aggressive cleaning (≥ 0.7) do not help.
+- Neither the audio front-ends nor the architectures from keyword spotting and sound event detection beat the
+  dataset's spectrogram with the small CNN.
+- The validation errors are concentrated on the 2023–2024 multichannel recordings (about 98% accuracy on the
+  single-channel 2021 recordings, about 94% on `channel_1`), yet training without them costs 5 to 11 points: they
+  are needed.
 
 ## 4. Testing the chosen model
 
