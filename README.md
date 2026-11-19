@@ -154,15 +154,16 @@ the images are the same as those of the
 ├── Train_model/
 │   ├── train_openwhistle.py        # training on OpenWhistle-CNN (PyTorch), sweeps in sweeps/
 │   ├── evaluate_models.py          # benchmark of any model on the OpenWhistle-CNN test split
+│   ├── label_review.py             # label audit: shared errors, review pages (review_pages/), blind review
 │   └── ...                         # older dataset creation / training scripts and notebooks
 ├── Models_vs_years_comparison/     # comparison of the models across recording years
-├── docs/                           # training guide, reproduction of the OpenWhistle CNN, leakage checks
+├── docs/                           # training and label review guides, reproduction of the OpenWhistle CNN
 ├── tests/                          # pytest suite
 └── requirements.txt
 ```
 
 > **Note** — `maintenance.py`, `Show_newly_detected_stuff.py`, `prepare_audio.py`, `test.py`, `predict_online.py`
-> and the older `Train_model/` scripts (all but `train_openwhistle.py` and `evaluate_models.py`) are research
+> and the older `Train_model/` scripts (all but `train_openwhistle.py`, `evaluate_models.py` and `label_review.py`) are research
 > scripts kept for reference: they contain paths specific to the original analysis machines and must be adapted
 > before use.
 
@@ -248,6 +249,11 @@ backbones. The sweeps of the repository look both for a model better than `base_
 model above 95% accuracy; they also measure label noise with out-of-fold scores, and compare audio front-ends and
 small architectures from keyword spotting. Protocol, options, model sizes, training times on a laptop GPU and the
 validation results so far: [docs/TRAINING.md](docs/TRAINING.md).
+
+The models mostly fail on the same validation windows. [`Train_model/label_review.py`](Train_model/label_review.py)
+measures these shared errors and builds review pages to check them by hand (image, 0–48 kHz spectrogram and audio
+of each window), including a blind review that estimates the label error rate and the agreement between
+annotators: [docs/LABEL_REVIEW.md](docs/LABEL_REVIEW.md).
 
 ## 🧪 Tests
 

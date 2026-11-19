@@ -145,7 +145,8 @@ Choosing the small model: take the smallest one whose **validation** accuracy cl
 
 The first sweep was stopped after 10 of its 15 runs, because its results pointed elsewhere: augmentation did not
 help, and all the models failed on largely the same validation windows (154 windows are misclassified by all 9 models
-compared, 126 of them labelled whistle).
+compared, 126 of them labelled whistle). The tools used to check these windows by hand are described in
+[LABEL_REVIEW.md](LABEL_REVIEW.md).
 
 - [`openwhistle_sweep2_broad.json`](../Train_model/sweeps/openwhistle_sweep2_broad.json) was stopped after its first
   5 runs: a 5-fold cross-validation of `tinycnn_32` at 112 px over the train recordings, which gives every train
